@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-
 export default defineConfig({
-  base: '/champions_league_sim/',
+  base: './',
+  build: { outDir: 'dist' }
 })

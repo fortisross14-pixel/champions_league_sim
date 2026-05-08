@@ -53,61 +53,27 @@ export async function dbAll() {
 }
 
 // ── State ────────────────────────────────────────────────────
-// NOTE: this object enumerates the keys we *start* with, but the
-// engine adds more fields at runtime (allTeams, teamStats,
-// seasonStats, lastMarket, etc). buildSave() does a deep clone of
-// the live S object, so anything attached to S at the time of save
-// is captured. resetState() and import() reset back to this same
-// shape so loading a save can never leak stale fields.
-const INITIAL_STATE = {
+export const S = {
   season: 1,
-  phase: 'idle', // idle | stats | market | qualifying | groups | knockout | done
+  phase: 'idle', // idle | groups | knockout | transfers | done
   teams: [],
-  groups: [],
+  groups: [],        // 8 groups of 4
   groupMatches: [],
   knockoutRounds: [],
   scorers: {},
-  stars: [],
-  coaches: [],
-  history: [],
+  stars: [],         // active player stars
+  coaches: [],       // active coaches (5)
+  history: [],       // past season results
   roundReached: {},
   champion: null,
   teamGoals: {},
   teamGoalsConceded: {},
-  teamShots: {},
-  teamPossession: {},
-  teamPossessionMatches: {},
   allMatchResults: [],
-  allTeams: null,
-  teamStats: null,
-  localLeagueResults: null,
-  lastMarket: null,
-  seasonAwards: {},
   nextId: 1,
 }
 
-export const S = JSON.parse(JSON.stringify(INITIAL_STATE))
-
-// Wipe S back to a clean slate. Used before applying a loaded save
-// so values from the current session can't leak through into the
-// loaded one.
-function resetState() {
-  Object.keys(S).forEach(k => { delete S[k] })
-  Object.assign(S, JSON.parse(JSON.stringify(INITIAL_STATE)))
-}
-
-// Bump this whenever the save-state shape changes in a
-// breaking way. importSave() warns when it sees an older version
-// so users know why their save might not look right.
-const SAVE_VERSION = 2
-
 export function buildSave() {
-  // Deep clone of the live S — captures every field present at
-  // save time, including ones that aren't in INITIAL_STATE.
-  const data = JSON.parse(JSON.stringify(S))
-  data.savedAt = Date.now()
-  data.saveVersion = SAVE_VERSION
-  return data
+  return { ...JSON.parse(JSON.stringify(S)), savedAt: Date.now() }
 }
 
 export async function autoSave() {
@@ -122,7 +88,6 @@ export async function loadGame() {
   try {
     const d = await dbLoad(AUTO_KEY)
     if (!d) return false
-    resetState()
     Object.assign(S, d)
     return true
   } catch (e) { return false }
@@ -143,7 +108,6 @@ export async function saveSlot(name) {
 export async function loadSlot(key) {
   const d = await dbLoad(key)
   if (!d) throw new Error('Save not found')
-  resetState()
   Object.assign(S, d)
   await autoSave()
 }
@@ -157,17 +121,14 @@ export async function deleteSlot(key) {
   await dbDelete(key)
 }
 
-// Export to JSON file. Filename includes the season + timestamp so
-// you can keep multiple snapshots side by side on disk.
+// Export to JSON file
 export function exportSave() {
   const data = buildSave()
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `cls_save_season${S.season}_${new Date().toISOString().slice(0,10)}.json`
+  a.download = `cls_save_season${S.season}_${Date.now()}.json`
   a.click()
-  // Free up the blob URL after a moment.
-  setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
 }
 
 export function importSave(file) {
@@ -176,24 +137,12 @@ export function importSave(file) {
     r.onload = e => {
       try {
         const d = JSON.parse(e.target.result)
-        // Basic sanity checks — make sure this looks like one of
-        // *our* save files and not something random.
-        if (typeof d !== 'object' || d === null) throw new Error('Not a JSON object')
-        if (typeof d.season !== 'number') throw new Error('Missing "season" — not a save file?')
-        if (!Array.isArray(d.history) && d.history !== undefined) throw new Error('Corrupt history')
-        // Older saves don't have a saveVersion. We still accept them
-        // but warn so the user knows things might look slightly off.
-        if (d.saveVersion && d.saveVersion > SAVE_VERSION) {
-          console.warn('Save was made by a newer version (' + d.saveVersion + '); some fields may be ignored.')
-        }
-        // Wipe stale state before applying the loaded data so
-        // nothing from the running session can leak through.
-        resetState()
+        if (!d.season) throw new Error('Invalid save')
         Object.assign(S, d)
-        autoSave().then(() => res(d)).catch(rej)
+        autoSave().then(res).catch(rej)
       } catch (err) { rej(err) }
     }
-    r.onerror = () => rej(r.error || new Error('Failed to read file'))
+    r.onerror = rej
     r.readAsText(file)
   })
 }
