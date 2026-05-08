@@ -1548,7 +1548,13 @@ function renderSeasonCL() {
   const topScorers = Object.entries(S.scorers || {}).sort((a,b) => b[1] - a[1]).slice(0, 8)
 
   // Highest-rated offensive (FWD/MID) and defensive (DEF/GK) stars.
-  const ratedStars = (S.teams || []).map(t => t.star).filter(Boolean).filter(s => s.ratings?.length)
+  // Walks EVERY star on every qualified team — not just team.star —
+  // because per-match ratings are written to individual stars in
+  // team.stars[]. (After save/load t.star may even reference a stale
+  // copy, so reading from t.stars is also more reliable.)
+  const ratedStars = (S.teams || [])
+    .flatMap(t => t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
+    .filter(s => s && s.ratings?.length)
   const avg = s => s.ratings.reduce((a,b) => a+b, 0) / s.ratings.length
   const offensives = ratedStars.filter(s => ['FWD','MID'].includes(s.pos)).map(s => ({ s, r: avg(s) }))
     .sort((a,b) => b.r - a.r).slice(0, 5)

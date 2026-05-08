@@ -118,12 +118,78 @@ export async function autoSave() {
   } catch (e) { console.warn('autosave failed', e) }
 }
 
+// After deserializing a save, the same team that lives in
+// S.groups[*].teams[j] no longer points at the same object as
+// S.groupMatches[k].t1 / .t2 — JSON.parse always creates fresh
+// objects. We need to rebind those references so when
+// updateGroupStats mutates match.t1, the standings render sees
+// the change. Same for knockout matches and stars/coaches.
+function rehydrateRefs() {
+  if (!S.teams?.length) return
+  // Build an id → live team object map (the "canonical" one we
+  // want all references to point to).
+  const teamById = new Map()
+  S.teams.forEach(t => teamById.set(t.id, t))
+
+  // Rebind groups: each group's teams[] entries should be the
+  // same object as S.teams[same id].
+  if (Array.isArray(S.groups)) {
+    S.groups.forEach(grp => {
+      if (Array.isArray(grp.teams)) {
+        grp.teams = grp.teams.map(t => teamById.get(t.id) || t)
+      }
+    })
+  }
+  // Rebind groupMatches: t1/t2 are team refs.
+  if (Array.isArray(S.groupMatches)) {
+    S.groupMatches.forEach(m => {
+      if (m.t1) m.t1 = teamById.get(m.t1.id) || m.t1
+      if (m.t2) m.t2 = teamById.get(m.t2.id) || m.t2
+    })
+  }
+  // Knockout rounds: same pattern.
+  if (Array.isArray(S.knockoutRounds)) {
+    S.knockoutRounds.forEach(round => {
+      if (Array.isArray(round.matches)) {
+        round.matches.forEach(m => {
+          if (m.t1) m.t1 = teamById.get(m.t1.id) || m.t1
+          if (m.t2) m.t2 = teamById.get(m.t2.id) || m.t2
+          if (m.winner) m.winner = teamById.get(m.winner.id) || m.winner
+        })
+      }
+    })
+  }
+  // Champion (if a season finished pre-save).
+  if (S.champion?.id) {
+    S.champion = teamById.get(S.champion.id) || S.champion
+  }
+  // Restore stars[] arrays on each team in S.teams to point at the
+  // same star objects as the canonical S.allTeams entries (so per-
+  // match stat tracking and rendering see consistent data).
+  if (Array.isArray(S.allTeams)) {
+    const allTeamById = new Map()
+    S.allTeams.forEach(t => allTeamById.set(t.id, t))
+    S.teams.forEach(t => {
+      const live = allTeamById.get(t.id)
+      if (live) {
+        t.stars = live.stars || []
+        t.star = (t.stars && t.stars[0]) || null
+        // Keep coach reference fresh too.
+        if (Array.isArray(S.coaches)) {
+          t.coach = S.coaches.find(c => c.teamId === t.id) || null
+        }
+      }
+    })
+  }
+}
+
 export async function loadGame() {
   try {
     const d = await dbLoad(AUTO_KEY)
     if (!d) return false
     resetState()
     Object.assign(S, d)
+    rehydrateRefs()
     return true
   } catch (e) { return false }
 }
@@ -145,6 +211,7 @@ export async function loadSlot(key) {
   if (!d) throw new Error('Save not found')
   resetState()
   Object.assign(S, d)
+  rehydrateRefs()
   await autoSave()
 }
 
@@ -190,6 +257,7 @@ export function importSave(file) {
         // nothing from the running session can leak through.
         resetState()
         Object.assign(S, d)
+        rehydrateRefs()
         autoSave().then(() => res(d)).catch(rej)
       } catch (err) { rej(err) }
     }
