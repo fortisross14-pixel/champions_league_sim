@@ -791,6 +791,12 @@ function finalizeSeasonStats() {
   const allStars = S.teams.flatMap(t => (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))).filter(Boolean)
   let topScorer=null, offMVP=null, defMVP=null
   let topGoals=0, topOffRating=0, topDefRating=0
+  // Fallback candidates: best off/def regardless of round reached,
+  // used only if no QF qualifier exists for that category. (Rare for
+  // offense, but very possible for defense in season 1 when there's
+  // only 1 star per team.)
+  let fallbackOff=null, fallbackOffR=0
+  let fallbackDef=null, fallbackDefR=0
 
   allStars.forEach(s => {
     const reached = S.roundReached[s.teamId] || 'Group'
@@ -802,12 +808,25 @@ function finalizeSeasonStats() {
     // Top scorer is OPEN to anyone — goals are goals.
     if ((s.goals||0) > topGoals) { topGoals = s.goals; topScorer = s }
 
-    // MVP eligibility requires at least Quarter-finals.
-    if (!QF_OR_BETTER.has(reached)) return
     const avgR = s.ratings?.length ? (s.ratings.reduce((a,b)=>a+b,0)/s.ratings.length) : 0
+    if (avgR <= 0) return
+
+    // Track fallback candidates across the whole field.
+    if (['FWD','MID'].includes(s.pos) && avgR > fallbackOffR) { fallbackOffR = avgR; fallbackOff = s }
+    if (['DEF','GK'].includes(s.pos) && avgR > fallbackDefR)  { fallbackDefR = avgR; fallbackDef = s }
+
+    // Preferred MVP candidates: only QF or better.
+    if (!QF_OR_BETTER.has(reached)) return
     if (['FWD','MID'].includes(s.pos) && avgR > topOffRating) { topOffRating = avgR; offMVP = s }
     if (['DEF','GK'].includes(s.pos) && avgR > topDefRating)  { topDefRating = avgR; defMVP = s }
   })
+
+  // If no QF-qualified DEF/GK (or FWD/MID) exists, fall back to the
+  // best across the field. This guarantees an MVP every season,
+  // which matters most for season 1 / early seasons when there are
+  // few stars to go around.
+  if (!offMVP && fallbackOff) { offMVP = fallbackOff; topOffRating = fallbackOffR }
+  if (!defMVP && fallbackDef) { defMVP = fallbackDef; topDefRating = fallbackDefR }
 
   S.seasonAwards = {
     topScorer: topScorer ? { name:topScorer.name, goals:topGoals, team:topScorer.teamName, tier:topScorer.tier } : null,
@@ -826,12 +845,58 @@ function finalizeSeasonStats() {
     else if (reached === 'Round of 16') st.roundOf16++
   })
 
+  // Find the runner-up — the team that lost the final.
+  const runnerUpId = Object.keys(S.roundReached).find(tid => S.roundReached[tid] === 'Final')
+  const runnerUp = runnerUpId ? S.teams.find(t => t.id === runnerUpId) : null
+
+  // Per-team season record: one row per CL-qualified team with the
+  // numbers we need to render the Team detail view (Year - OVR -
+  // Round - Wins - Goals - Coach - Stars). Group-stage exits get
+  // "Group" as their round; non-qualifiers (DNQ) are recorded
+  // separately so we can show "DNQ" rows for all 81 teams.
+  const teamSeasons = S.teams.map(t => {
+    const stars = (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
+    return {
+      teamId: t.id,
+      teamName: t.name,
+      cc: t.cc,
+      overall: t.currentOverall || 0,
+      reached: S.roundReached[t.id] || 'Group',
+      played: (t.w || 0) + (t.d || 0) + (t.l || 0),
+      wins:   t.w || 0,
+      draws:  t.d || 0,
+      losses: t.l || 0,
+      gf:     t.gf || 0,
+      ga:     t.ga || 0,
+      coach:  t.coach ? { name: t.coach.name, tier: t.coach.tier } : null,
+      stars:  stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
+    }
+  })
+  // Non-qualified teams: every team in S.allTeams that wasn't in S.teams.
+  const qualifiedIds = new Set(S.teams.map(t => t.id))
+  const dnqTeams = (S.allTeams || []).filter(t => !qualifiedIds.has(t.id)).map(t => {
+    const stars = (t.stars && t.stars.length ? t.stars : [])
+    const coach = (S.coaches || []).find(c => c.teamId === t.id)
+    return {
+      teamId: t.id,
+      teamName: t.name,
+      cc: t.cc,
+      overall: t.currentOverall || 0,
+      reached: 'DNQ',
+      coach: coach ? { name: coach.name, tier: coach.tier } : null,
+      stars: stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
+    }
+  })
+
   S.history = S.history || []
   S.history.push({
     season: S.season,
     champion: S.champion.id,
     championName: S.champion.name,
     cc: S.champion.cc,
+    runnerUpId: runnerUp?.id || null,
+    runnerUpName: runnerUp?.name || null,
+    runnerUpCC: runnerUp?.cc || null,
     roundReached: { ...S.roundReached },
     topScorers: Object.entries(S.scorers||{}).sort((a,b) => b[1]-a[1]).slice(0,5),
     totalGoals: Object.values(S.teamGoals||{}).reduce((a,b)=>a+b, 0),
@@ -840,13 +905,27 @@ function finalizeSeasonStats() {
       league: r.league.name,
       cc: r.league.cc,
       champion: r.qualified[0]?.name || '—',
+      championId: r.qualified[0]?.id || null,
     })),
+    teamSeasons,
+    dnqTeams,
     stars: allStars.map(s => ({
-      name: s.name, teamName: s.teamName, pos: s.pos, tier: s.tier,
+      id: s.id,                           // for linking to detail screens
+      name: s.name, teamName: s.teamName, teamId: s.teamId,
+      pos: s.pos, tier: s.tier,
       goals: s.goals||0, games: s.wcsPlayed||0, medals: { ...s.medals },
       avgRating: s.ratings?.length ? (s.ratings.reduce((a,b)=>a+b,0)/s.ratings.length) : 0,
+      // What round did this player's team reach this season?
+      roundReached: S.roundReached[s.teamId] || 'Group',
     })),
   })
+
+  // ── Discard the per-match log now that the season is over ──
+  // We've extracted what we need into the season record above. The
+  // raw match-by-match data (which can be ~hundreds of KB by mid-
+  // tournament) is no longer needed.
+  S.allMatchResults = []
+
   autoSave()
 }
 
@@ -931,14 +1010,15 @@ export function runMarket() {
     if (!team.stars.includes(star)) return
 
     // Move chance scales with how unhappy the star is at their team.
-    // Baseline 10–15%. Stars at teams with low appeal (weak base, few
-    // recent qualifications, missed this season's CL) get up to ~50%.
-    // Star tier amplifies this — legends are most likely to push for a
-    // move out of a sinking ship.
+    // Baseline is intentionally low (~5–8%): real-world transfers
+    // are rare. Stars at low-appeal teams (weak base, no recent CL,
+    // missed this year's group stage) push it up, capped at ~30% for
+    // legendary players stuck at the worst clubs. On a roster of
+    // ~90 stars the expected total signings should be ~10–12.
     const appeal = teamAppeal(team)              // ~0..30
-    const unhappiness = Math.max(0, 18 - appeal) // 0..18; high = unhappy
-    const tierMul = { legendary:2.4, epic:1.8, rare:1.4, uncommon:1.1, common:1.0 }[star.tier] || 1
-    const moveChance = Math.min(0.65, (0.10 + Math.random() * 0.05) + unhappiness * 0.022 * tierMul)
+    const unhappiness = Math.max(0, 18 - appeal) // 0..18
+    const tierMul = { legendary:1.8, epic:1.4, rare:1.2, uncommon:1.05, common:1.0 }[star.tier] || 1
+    const moveChance = Math.min(0.30, (0.05 + Math.random() * 0.03) + unhappiness * 0.011 * tierMul)
     if (Math.random() > moveChance) return
 
     // Pick a destination. Weight by appeal — stars chase strong clubs.
@@ -1037,9 +1117,12 @@ export function runMarket() {
   })
   S.coaches = coachSurvivors
 
-  // ── 4. Coach swaps (10% per coach, pairwise) ─────────────────
-  const swapping = S.coaches.filter(() => Math.random() < 0.10)
+  // ── 4. Coach swaps (~7% per coach — pairs swap, so on a roster
+  // of 81 coaches expect roughly 5–6 swap-moves logged per market) ─
+  const swapping = S.coaches.filter(() => Math.random() < 0.07)
+  const swapped = new Set()  // coach ids already involved this round
   shuffle(swapping).forEach(coach => {
+    if (swapped.has(coach.id)) return
     const destTeam = pick(S.allTeams.filter(t => t.id !== coach.teamId))
     if (!destTeam) return
     const destCoach = S.coaches.find(c => c.teamId === destTeam.id && c.id !== coach.id)
@@ -1047,22 +1130,21 @@ export function runMarket() {
     const oldTeam = findTeam(oldTeamId)
 
     if (destCoach) {
+      // Pairwise swap — log it once with a "↔" so the market screen
+      // shows both directions on a single card.
       moves.push({
         phase: 'signing', kind: 'coach',
         coach, name: coach.name, tier: coach.tier, trait: coach.trait,
         from: coach.teamName, fromId: coach.teamId, fromCC: findTeam(coach.teamId)?.cc,
         to:   destTeam.name,  toId: destTeam.id,    toCC: destTeam.cc,
-      })
-      moves.push({
-        phase: 'signing', kind: 'coach',
-        coach: destCoach, name: destCoach.name, tier: destCoach.tier, trait: destCoach.trait,
-        from: destCoach.teamName, fromId: destCoach.teamId, fromCC: findTeam(destCoach.teamId)?.cc,
-        to:   oldTeam?.name,      toId: oldTeam?.id,        toCC: oldTeam?.cc,
+        swap: { withName: destCoach.name, withTier: destCoach.tier },
       })
       coach.teamId = destTeam.id; coach.teamName = destTeam.name
       destCoach.teamId = oldTeamId; destCoach.teamName = oldTeam?.name
       destTeam.coachId = coach.id
       if (oldTeam) oldTeam.coachId = destCoach.id
+      swapped.add(coach.id)
+      swapped.add(destCoach.id)
     } else {
       moves.push({
         phase: 'signing', kind: 'coach',
@@ -1073,6 +1155,7 @@ export function runMarket() {
       coach.teamId = destTeam.id; coach.teamName = destTeam.name
       destTeam.coachId = coach.id
       if (oldTeam) oldTeam.coachId = null
+      swapped.add(coach.id)
     }
   })
 

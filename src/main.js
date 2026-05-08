@@ -919,6 +919,10 @@ function renderMarketMoveCard(m) {
     summary = `Retires from ${flag(fromCC)} ${m.from}`
   } else if (m.phase === 'signing') {
     summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--blue2)">${flag(toCC)} ${m.to}</span>`
+    if (m.swap) {
+      // Pairwise coach swap: show the other half of the trade.
+      summary += `<div style="margin-top:2px;color:var(--txt3)">↔ swapped with <strong>${m.swap.withName}</strong></div>`
+    }
   } else if (m.phase === 'overflow') {
     if (m.to) summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--gold)">${flag(toCC)} ${m.to}</span>${m.reason ? ` <span style="color:var(--txt3);font-size:10px">(${m.reason})</span>` : ''}`
     else summary = `Released from ${flag(fromCC)} ${m.from} <span style="color:var(--txt3);font-size:10px">(${m.reason || 'no destination'})</span>`
@@ -956,6 +960,23 @@ window.openCoachDetail = function(coachId) {
   if (!coach) return toast('Coach not found.')
   showDetailModal(renderCoachDetailHTML(coach))
 }
+window.openTeamDetail = function(teamId) {
+  const team = (S.allTeams || []).find(t => t.id === teamId)
+  // For teams not currently in S.allTeams (extremely unlikely — every
+  // team should be there), fall back to a stub from the most recent
+  // history record.
+  if (!team) {
+    const fromHist = [...(S.history || [])].reverse()
+      .flatMap(h => [...(h.teamSeasons || []), ...(h.dnqTeams || [])])
+      .find(ts => ts.teamId === teamId)
+    if (!fromHist) return toast('Team not found.')
+    return showDetailModal(renderTeamDetailHTML({
+      id: fromHist.teamId, name: fromHist.teamName, cc: fromHist.cc,
+      base: 0, currentOverall: fromHist.overall || 0,
+    }))
+  }
+  showDetailModal(renderTeamDetailHTML(team))
+}
 window.closeDetailModal = function() {
   const m = $('detail-modal')
   if (m) m.remove()
@@ -982,6 +1003,102 @@ function renderStarDetailHTML(star) {
   const skills = describeStarSkills(star)
   const age = (S.season || 1) - (star.season || 1)
   const country = COUNTRY_NAME[star.nationality] || star.nationality || '—'
+
+  // Walk S.history to assemble the career row-by-row. Match by ID
+  // (added in the season-end snapshot) for new saves; fall back to
+  // name match for legacy saves missing the id field.
+  const careerRows = []
+  let totalGoals = 0
+  let totalGames = 0
+  let ratingSum = 0, ratingCount = 0
+  let totalGold = 0, totalSilver = 0, totalBronze = 0
+  let topScorerCount = 0, offMVPCount = 0, defMVPCount = 0
+  ;(S.history || []).forEach(h => {
+    const rec = (h.stars || []).find(s => s.id === star.id) ||
+                (h.stars || []).find(s => s.name === star.name && s.pos === star.pos)
+    if (!rec) return
+    totalGoals += rec.goals || 0
+    totalGames += rec.games || 0
+    if (rec.avgRating) { ratingSum += rec.avgRating; ratingCount++ }
+    if (rec.medals?.gold) totalGold     += rec.medals.gold
+    if (rec.medals?.silver) totalSilver += rec.medals.silver
+    if (rec.medals?.bronze) totalBronze += rec.medals.bronze
+
+    const awards = []
+    if (h.awards?.topScorer?.name === star.name) { awards.push('Top Scorer'); topScorerCount++ }
+    if (h.awards?.offMVP?.name    === star.name) { awards.push('Off MVP');    offMVPCount++ }
+    if (h.awards?.defMVP?.name    === star.name) { awards.push('Def MVP');    defMVPCount++ }
+
+    careerRows.push({
+      season: h.season,
+      teamName: rec.teamName,
+      avgRating: rec.avgRating,
+      goals: rec.goals || 0,
+      reached: rec.roundReached || 'Group',
+      awards,
+    })
+  })
+  // Newest first.
+  careerRows.sort((a,b) => b.season - a.season)
+
+  // Add a row for the CURRENT in-progress season if the player is
+  // active and the season hasn't been finalized yet.
+  if (star.ratings?.length) {
+    const alreadyHasCurrent = careerRows.some(r => r.season === S.season)
+    if (!alreadyHasCurrent) {
+      const reached = S.roundReached?.[star.teamId] || (S.phase === 'done' ? 'Group' : 'In progress')
+      careerRows.unshift({
+        season: S.season,
+        teamName: star.teamName,
+        avgRating: star.ratings.reduce((a,b)=>a+b,0) / star.ratings.length,
+        goals: star.goals || 0,
+        reached,
+        awards: [],
+        current: true,
+      })
+    }
+  }
+
+  const reachLabel = (r) => {
+    if (r === 'Group')          return '<span style="color:var(--txt3)">Group stage</span>'
+    if (r === 'Round of 16')    return '<span style="color:var(--txt2)">R16</span>'
+    if (r === 'Quarter-finals') return '<span style="color:#f0c040">QF</span>'
+    if (r === 'Semi-finals')    return '<span style="color:#f0c040">SF</span>'
+    if (r === 'Final')          return '<span style="color:var(--gold)">Final</span>'
+    if (r === 'Winner')         return '<span style="color:var(--gold)">🏆 Champion</span>'
+    if (r === 'In progress')    return '<span style="color:var(--blue2)">In progress</span>'
+    return r
+  }
+  const careerAvg = ratingCount ? (ratingSum / ratingCount) : 0
+
+  // Awards summary cards.
+  const awardsSummary = `
+    <div class="career-awards">
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${totalGold || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num">${topScorerCount}</div><div class="career-award-label">Top Scorer</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${offMVPCount}</div><div class="career-award-label">Off MVP</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--green)">${defMVPCount}</div><div class="career-award-label">Def MVP</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${totalGoals}</div><div class="career-award-label">Career Goals</div></div>
+      <div class="career-award-card"><div class="career-award-num">${careerAvg ? careerAvg.toFixed(2) : '—'}</div><div class="career-award-label">Career Avg</div></div>
+    </div>`
+
+  const careerTable = careerRows.length ? `
+    <div class="career-section-title">CAREER</div>
+    <div class="table-wrap"><table class="data-table compact career-table"><thead><tr>
+      <th class="num">Yr</th><th>Team</th>
+      <th class="num">Rating</th><th class="num">Goals</th>
+      <th>Result</th><th>Awards</th>
+    </tr></thead><tbody>
+    ${careerRows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
+      <td class="num"><strong>${row.season}</strong></td>
+      <td>${row.teamName}</td>
+      <td class="num" style="color:var(--blue2)">${row.avgRating ? row.avgRating.toFixed(2) : '—'}</td>
+      <td class="num" style="color:var(--gold)">${row.goals || '—'}</td>
+      <td style="font-size:11px">${reachLabel(row.reached)}</td>
+      <td style="font-size:11px;color:var(--gold)">${row.awards.length ? row.awards.join(', ') : '—'}</td>
+    </tr>`).join('')}
+    </tbody></table></div>` : ''
+
   return `
     <div class="playback-header">
       <div class="playback-round">Player Profile</div>
@@ -996,6 +1113,9 @@ function renderStarDetailHTML(star) {
       Age: ${age + 22} (${age}/${star.lifespan} seasons in career) ·
       Career goals: <span style="color:var(--gold)">${star.goals || 0}</span>
     </div>
+    ${awardsSummary}
+    ${careerTable}
+    <div class="career-section-title" style="margin-top:14px">SKILLS</div>
     <div class="star-skills">
       ${skills.map(s => `<div class="star-skill-line">${s}</div>`).join('')}
     </div>`
@@ -1027,6 +1147,144 @@ function renderCoachDetailHTML(coach) {
     <div class="star-skills">
       ${skills.map(s => `<div class="star-skill-line">${s}</div>`).join('')}
     </div>`
+}
+
+function renderTeamDetailHTML(team) {
+  // Walk S.history newest first to build per-season rows for this
+  // team. Each year may be a "qualified" entry (with games/goals/
+  // coach/stars) or a "DNQ" entry (sparser data).
+  const rows = []
+  const seasonStats = (S.teamStats || {})[team.id]
+
+  ;[...(S.history || [])].reverse().forEach(h => {
+    const qual = (h.teamSeasons || []).find(ts => ts.teamId === team.id)
+    if (qual) {
+      rows.push({
+        season: h.season,
+        overall: qual.overall || 0,
+        reached: qual.reached,
+        played: qual.played, wins: qual.wins, gf: qual.gf, ga: qual.ga,
+        coach: qual.coach,
+        stars: qual.stars || [],
+      })
+      return
+    }
+    const dnq = (h.dnqTeams || []).find(ts => ts.teamId === team.id)
+    if (dnq) {
+      rows.push({
+        season: h.season,
+        overall: dnq.overall || 0,
+        reached: 'DNQ',
+        played: 0, wins: 0, gf: 0, ga: 0,
+        coach: dnq.coach,
+        stars: dnq.stars || [],
+      })
+      return
+    }
+    // Pre-existing-data row: history entry exists but no team-by-
+    // team data was captured (older save). Fall back to roundReached
+    // map if it has the team id.
+    if (h.roundReached?.[team.id]) {
+      rows.push({
+        season: h.season,
+        overall: 0,
+        reached: h.roundReached[team.id],
+        played: null, wins: null, gf: null, ga: null,
+        coach: null,
+        stars: [],
+        legacy: true,
+      })
+    }
+  })
+
+  // Inject the in-progress current season at the top.
+  const liveTeam = S.teams?.find(t => t.id === team.id)
+  if (liveTeam && S.phase !== 'idle' && S.phase !== 'done') {
+    const stars = (liveTeam.stars || []).map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier }))
+    rows.unshift({
+      season: S.season,
+      overall: liveTeam.currentOverall || 0,
+      reached: 'In progress',
+      played: (liveTeam.w || 0) + (liveTeam.d || 0) + (liveTeam.l || 0),
+      wins: liveTeam.w || 0,
+      gf: liveTeam.gf || 0, ga: liveTeam.ga || 0,
+      coach: liveTeam.coach ? { name: liveTeam.coach.name, tier: liveTeam.coach.tier } : null,
+      stars,
+      current: true,
+    })
+  }
+
+  const reachLabel = (r) => {
+    if (r === 'In progress')    return '<span style="color:var(--blue2)">In progress</span>'
+    if (r === 'DNQ')            return '<span style="color:var(--txt3)">DNQ</span>'
+    if (r === 'Group')          return '<span style="color:var(--txt2)">Group</span>'
+    if (r === 'Round of 16')    return '<span style="color:var(--txt2)">R16</span>'
+    if (r === 'Quarter-finals') return '<span style="color:#f0c040">QF</span>'
+    if (r === 'Semi-finals')    return '<span style="color:#f0c040">SF</span>'
+    if (r === 'Final')          return '<span style="color:var(--gold)">Final</span>'
+    if (r === 'Winner')         return '<span style="color:var(--gold)">🏆 Champion</span>'
+    return r
+  }
+
+  const renderStarsCell = (stars) => {
+    if (!stars?.length) return '<span style="color:var(--txt3)">—</span>'
+    return stars.map(s =>
+      `<span style="color:${tierColor(s.tier)};margin-right:6px;font-size:11px">⭐${s.name}<span style="color:var(--txt3)">·${s.pos}</span></span>`
+    ).join('')
+  }
+  const renderCoachCell = (coach) => {
+    if (!coach) return '<span style="color:var(--txt3)">—</span>'
+    return `<span style="color:${tierColor(coach.tier)};font-size:11px">📋${coach.name}</span>`
+  }
+
+  // Top-level totals (from S.teamStats — the all-time accumulator).
+  const summary = seasonStats ? `
+    <div class="career-awards">
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${seasonStats.titles || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num">${seasonStats.finals || 0}</div><div class="career-award-label">Finals lost</div></div>
+      <div class="career-award-card"><div class="career-award-num">${seasonStats.semiFinals || 0}</div><div class="career-award-label">Semis</div></div>
+      <div class="career-award-card"><div class="career-award-num">${seasonStats.quarterFinals || 0}</div><div class="career-award-label">QFs</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--legendary)">${seasonStats.localTitles || 0}</div><div class="career-award-label">Local Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${seasonStats.participations || 0}</div><div class="career-award-label">CL appearances</div></div>
+    </div>` : ''
+
+  const careerTable = rows.length ? `
+    <div class="career-section-title">SEASON-BY-SEASON</div>
+    <div class="table-wrap"><table class="data-table compact career-table"><thead><tr>
+      <th class="num">Yr</th>
+      <th class="num">OVR</th>
+      <th>Result</th>
+      <th class="num">P</th>
+      <th class="num">W</th>
+      <th class="num">GF</th>
+      <th class="num">GA</th>
+      <th>Coach</th>
+      <th>Stars</th>
+    </tr></thead><tbody>
+    ${rows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
+      <td class="num"><strong>${row.season}</strong></td>
+      <td class="num" style="color:var(--gold)">${row.overall || '—'}</td>
+      <td style="font-size:11px">${reachLabel(row.reached)}</td>
+      <td class="num">${row.played != null ? row.played : '—'}</td>
+      <td class="num" style="color:var(--green)">${row.wins != null ? row.wins : '—'}</td>
+      <td class="num">${row.gf != null ? row.gf : '—'}</td>
+      <td class="num">${row.ga != null ? row.ga : '—'}</td>
+      <td>${renderCoachCell(row.coach)}</td>
+      <td>${renderStarsCell(row.stars)}</td>
+    </tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">No history for this team yet.</div>'
+
+  return `
+    <div class="playback-header">
+      <div class="playback-round">Club Profile</div>
+      <span class="badge" style="background:rgba(240,192,64,.15);color:var(--gold);border:1px solid rgba(240,192,64,.4);font-size:10px">BASE ${team.base || '—'}</span>
+    </div>
+    <div style="font-family:var(--font-head);font-size:24px;font-weight:700;margin-bottom:4px">${flag(team.cc)} ${team.name}</div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">
+      Current season overall: <span style="color:var(--gold);font-weight:700">${team.currentOverall || '—'}</span>
+    </div>
+    ${summary}
+    ${careerTable}`
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1158,7 +1416,7 @@ function renderTeams() {
   sorted.forEach((t, i) => {
     const eff = getEffStats(t)
     const o = Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
-    html += `<tr>
+    html += `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
       <td style="color:var(--txt3)">${i+1}</td>
       <td><strong>${flag(t.cc)} ${t.name}</strong>${t.isLocalChampion ? ' <span class="badge badge-legendary" style="font-size:8px">CHAMP</span>' : ''}</td>
       <td class="num" style="color:var(--blue2)">${eff.attack}</td>
@@ -1363,8 +1621,20 @@ function renderHistory() {
     seasonsHTML = `<div class="sec">SEASON HISTORY</div>` + [...S.history].reverse().map(h => `
       <div class="history-card">
         <div class="history-season">SEASON ${h.season}</div>
-        <div class="history-champion">🏆 ${flag(h.cc || '')} ${h.championName}</div>
-        <div style="font-size:12px;color:var(--txt2);margin-top:4px">${h.totalGoals||0} goals · Top scorer: ${h.topScorers?.[0]?.[0] || '—'} (${h.topScorers?.[0]?.[1] || 0}⚽)</div>
+        <div class="history-podium">
+          <div class="history-podium-champ">
+            <div class="history-podium-trophy">🏆</div>
+            <div class="history-podium-label">CHAMPION</div>
+            <div class="history-podium-name">${flag(h.cc || '')} ${h.championName}</div>
+          </div>
+          ${h.runnerUpName ? `
+            <div class="history-podium-runner">
+              <div class="history-podium-runner-icon">🥈</div>
+              <div class="history-podium-label">RUNNER-UP</div>
+              <div class="history-podium-runner-name">${flag(h.runnerUpCC || '')} ${h.runnerUpName}</div>
+            </div>` : ''}
+        </div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:8px">${h.totalGoals||0} goals · Top scorer: ${h.topScorers?.[0]?.[0] || '—'} (${h.topScorers?.[0]?.[1] || 0}⚽)</div>
         ${h.awards?.offMVP ? `<div style="font-size:11px;color:var(--txt3)">🌟 ${h.awards.offMVP.name} Off MVP · 🛡️ ${h.awards.defMVP?.name || '—'} Def MVP</div>` : ''}
         ${h.localChampions?.length ? `<details style="margin-top:6px">
           <summary style="cursor:pointer;font-size:11px;color:var(--txt3)">Local champions →</summary>
@@ -1423,7 +1693,7 @@ function renderHistoryTeams(teamStatsList) {
         ${c.label}${sortIndicator(historyTeamSort, c.id)}
       </th>`).join('')}
     </tr></thead><tbody>
-    ${sorted.slice(0, 30).map(t => `<tr>
+    ${sorted.slice(0, 30).map(t => `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
       <td><strong>${flag(t.cc)} ${t.name}</strong></td>
       <td class="num" style="color:var(--gold)">${t.titles || '—'}</td>
       <td class="num">${t.finals || '—'}</td>

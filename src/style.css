@@ -1408,3 +1408,111 @@ img.twemoji-img {
   margin-bottom: 6px;
   font-family: var(--font-head);
 }
+
+/* ─── Player profile career table & awards ───────────────── */
+.career-awards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+@media (min-width: 600px) {
+  .career-awards { grid-template-columns: repeat(6, 1fr); }
+}
+.career-award-card {
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+  border-radius: var(--r);
+  padding: 8px 6px;
+  text-align: center;
+}
+.career-award-num {
+  font-family: var(--font-head);
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--txt);
+  line-height: 1;
+}
+.career-award-label {
+  font-family: var(--font-head);
+  font-size: 9px;
+  letter-spacing: .1em;
+  color: var(--txt3);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.career-section-title {
+  font-family: var(--font-head);
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--txt3);
+  text-transform: uppercase;
+  margin: 6px 0 6px;
+}
+.career-table th, .career-table td {
+  font-size: 12px;
+  padding: 5px 6px;
+}
+.career-current {
+  background: rgba(76,145,230,.08);
+}
+.career-current td:first-child::before {
+  content: '▶ ';
+  color: var(--blue2);
+}
+
+/* ── History per-season podium (champion + runner-up) ────── */
+.history-podium {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: stretch;
+  margin: 6px 0 4px;
+}
+.history-podium-champ {
+  background: linear-gradient(135deg, rgba(240,192,64,.18), rgba(240,192,64,.04));
+  border: 1px solid rgba(240,192,64,.45);
+  border-radius: var(--R);
+  padding: 10px 14px;
+}
+.history-podium-trophy {
+  font-size: 26px;
+  line-height: 1;
+}
+.history-podium-label {
+  font-family: var(--font-head);
+  font-size: 9.5px;
+  letter-spacing: .14em;
+  color: var(--txt3);
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+.history-podium-name {
+  font-family: var(--font-head);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  color: var(--txt);
+  margin-top: 2px;
+}
+.history-podium-runner {
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+  border-radius: var(--R);
+  padding: 10px 14px;
+  min-width: 140px;
+}
+.history-podium-runner-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+.history-podium-runner-name {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt2);
+  margin-top: 2px;
+}
+@media (max-width: 480px) {
+  .history-podium { grid-template-columns: 1fr; }
+}
