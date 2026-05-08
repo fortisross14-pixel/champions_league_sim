@@ -224,6 +224,66 @@ export async function deleteSlot(key) {
   await dbDelete(key)
 }
 
+// ── Restart-point snapshots ──────────────────────────────────
+// Two reserved slots, both prefixed with __ so allSlots() (which
+// filters by slot__*) doesn't show them in the user-visible list:
+//
+//   __preSeason     — taken right before runStatsUpdate runs.
+//                     Restoring it puts the user back at "Begin
+//                     Season N" with no stats rolled and no market
+//                     activity yet. ALWAYS overwrites — only ever
+//                     one of these exists (the most recent).
+//
+//   __preTournament — taken right after drawGroups, before the
+//                     first match. Restoring it keeps the draw,
+//                     market, and stats but resets all standings
+//                     and match results. Same overwrite policy.
+const PRE_SEASON_KEY = '__preSeason'
+const PRE_TOURNAMENT_KEY = '__preTournament'
+
+export async function snapshotPreSeason() {
+  await dbSave(PRE_SEASON_KEY, buildSave())
+  // A new season's pre-tournament snapshot doesn't exist yet — clear
+  // any stale one from the previous season so we don't accidentally
+  // roll forward onto the wrong groups.
+  await dbDelete(PRE_TOURNAMENT_KEY)
+}
+
+export async function snapshotPreTournament() {
+  await dbSave(PRE_TOURNAMENT_KEY, buildSave())
+}
+
+// "Has restart points?" — for enabling/disabling the menu items.
+export async function hasPreSeasonSnapshot() {
+  return !!(await dbLoad(PRE_SEASON_KEY))
+}
+export async function hasPreTournamentSnapshot() {
+  return !!(await dbLoad(PRE_TOURNAMENT_KEY))
+}
+
+// Restore to before-stats state. Wipes both snapshots since the
+// pre-tournament one (if any) belongs to the season we just unwound.
+export async function restartSeason() {
+  const d = await dbLoad(PRE_SEASON_KEY)
+  if (!d) throw new Error('No pre-season snapshot found')
+  resetState()
+  Object.assign(S, d)
+  rehydrateRefs()
+  await dbDelete(PRE_TOURNAMENT_KEY)
+  await autoSave()    // make autosave match the restored state
+}
+
+// Restore to before-first-match state. Pre-season snapshot stays —
+// the user might still want to roll back further.
+export async function restartTournament() {
+  const d = await dbLoad(PRE_TOURNAMENT_KEY)
+  if (!d) throw new Error('No pre-tournament snapshot found')
+  resetState()
+  Object.assign(S, d)
+  rehydrateRefs()
+  await autoSave()    // make autosave match the restored state
+}
+
 // Export to JSON file. Filename includes the season + timestamp so
 // you can keep multiple snapshots side by side on disk.
 export function exportSave() {

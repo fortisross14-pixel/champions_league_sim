@@ -1,6 +1,9 @@
 import {
   S, autoSave, loadGame, clearGame, exportSave, importSave,
   saveSlot, loadSlot, allSlots, deleteSlot, dbLoad,
+  snapshotPreSeason, snapshotPreTournament,
+  hasPreSeasonSnapshot, hasPreTournamentSnapshot,
+  restartSeason, restartTournament,
 } from './store.js'
 import {
   runQualification, drawGroups, initStarsAndCoaches, linkStarsToTeams,
@@ -118,6 +121,10 @@ window.handleMain = async function () {
     // First time? Set up the world skeleton (teams + coach/star
     // containers, but no actual players yet).
     if (!S.allTeams) initStarsAndCoaches()
+    // RESTART POINT: capture the world *before* we touch anything,
+    // so "Restart Season" can roll back here. This overwrites the
+    // previous season's pre-season snapshot (only one ever kept).
+    await snapshotPreSeason()
     // STEP 1 of the season: roll new per-team season stats around
     // each team's permanent base rating, capped at ±8 from last
     // year's value.
@@ -147,6 +154,10 @@ window.handleMain = async function () {
   } else if (p === 'qualifying') {
     drawGroups()
     S.phase = 'groups'
+    // RESTART POINT: capture the world right after the draw, before
+    // any match has been played. "Restart Tournament" rolls back
+    // here.
+    await snapshotPreTournament()
     await autoSave()
     updatePhaseUI()
     toast('Groups drawn!')
@@ -1650,7 +1661,25 @@ function renderSeasonCL() {
 // ─────────────────────────────────────────────────────────────
 // SETTINGS / SAVES
 // ─────────────────────────────────────────────────────────────
-window.openSettings  = () => { $('settings-overlay').style.display = 'flex' }
+window.openSettings = async () => {
+  $('settings-overlay').style.display = 'flex'
+  // Update enabled state of the two restart buttons based on
+  // whether the corresponding snapshots exist.
+  const [hasPre, hasTour] = await Promise.all([
+    hasPreSeasonSnapshot(),
+    hasPreTournamentSnapshot(),
+  ])
+  const seasonBtn = $('restart-season-btn')
+  const tourBtn   = $('restart-tournament-btn')
+  if (seasonBtn) {
+    seasonBtn.disabled = !hasPre
+    seasonBtn.title = hasPre ? '' : 'Available after you start a season'
+  }
+  if (tourBtn) {
+    tourBtn.disabled = !hasTour
+    tourBtn.title = hasTour ? '' : 'Available after groups are drawn'
+  }
+}
 window.closeSettings = () => { $('settings-overlay').style.display = 'none' }
 
 window.openSaveManager = async function () {
@@ -1822,6 +1851,59 @@ window.confirmReset = function () {
   _confirmCb = async () => { await clearGame(); location.reload() }
   $('confirm-overlay').style.display = 'flex'
 }
+
+window.confirmRestartSeason = async function () {
+  closeSettings()
+  if (!(await hasPreSeasonSnapshot())) {
+    toast('No pre-season snapshot to restart from.', 'error')
+    return
+  }
+  $('confirm-icon').textContent = '⏮'
+  $('confirm-title').textContent = 'Restart Season?'
+  $('confirm-msg').textContent =
+    'Roll back to the start of this season — before stats update, market, and draw. ' +
+    'All matches, transfers, and stat changes from this season will be undone. This cannot be reversed.'
+  $('confirm-ok').textContent = 'Restart Season'
+  $('confirm-ok').className = 'btn btn-danger'
+  _confirmCb = async () => {
+    try {
+      await restartSeason()
+      updatePhaseUI()
+      renderPlay()
+      toast('Season restarted from the very beginning.')
+    } catch (e) {
+      toast('Restart failed: ' + e.message, 'error')
+    }
+  }
+  $('confirm-overlay').style.display = 'flex'
+}
+
+window.confirmRestartTournament = async function () {
+  closeSettings()
+  if (!(await hasPreTournamentSnapshot())) {
+    toast('No tournament snapshot to restart from.', 'error')
+    return
+  }
+  $('confirm-icon').textContent = '↩'
+  $('confirm-title').textContent = 'Restart Tournament?'
+  $('confirm-msg').textContent =
+    'Roll back to the moment after the draw, before any match was played. ' +
+    'The groups stay the same; standings and results are wiped. This cannot be reversed.'
+  $('confirm-ok').textContent = 'Restart Tournament'
+  $('confirm-ok').className = 'btn btn-danger'
+  _confirmCb = async () => {
+    try {
+      await restartTournament()
+      updatePhaseUI()
+      renderPlay()
+      toast('Tournament restarted — all teams back to 0/0/0.')
+    } catch (e) {
+      toast('Restart failed: ' + e.message, 'error')
+    }
+  }
+  $('confirm-overlay').style.display = 'flex'
+}
+
 window.confirmAccept = () => { $('confirm-overlay').style.display = 'none'; _confirmCb?.(); _confirmCb = null }
 window.confirmDeny   = () => { $('confirm-overlay').style.display = 'none'; _confirmCb = null }
 

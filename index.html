@@ -70,6 +70,9 @@
       <input type="file" accept=".json" style="display:none" onchange="doImport(event)">
     </label>
     <div class="settings-divider"></div>
+    <button id="restart-tournament-btn" class="settings-item warn" onclick="confirmRestartTournament()">↩ Restart Tournament</button>
+    <button id="restart-season-btn" class="settings-item warn" onclick="confirmRestartSeason()">⏮ Restart Season</button>
+    <div class="settings-divider"></div>
     <button class="settings-item danger" onclick="confirmReset()">🗑️ Reset World</button>
   </div>
 </div>

@@ -352,6 +352,18 @@ table.data-table .num { text-align: center; }
 .settings-item:hover { background: var(--bg3); color: var(--txt); }
 .settings-item.danger { color: #e57373; }
 .settings-item.danger:hover { background: #3a0a0a; color: #ff6b6b; }
+.settings-item.warn { color: #f0c040; }
+.settings-item.warn:hover { background: #2a2010; color: #ffd066; }
+.settings-item:disabled,
+.settings-item[disabled] {
+  color: var(--txt3);
+  opacity: .45;
+  cursor: not-allowed;
+}
+.settings-item:disabled:hover {
+  background: transparent;
+  color: var(--txt3);
+}
 .settings-divider { height: 1px; background: var(--bg4); margin: 4px 0; }
 
 .saves-panel {
