@@ -292,6 +292,16 @@ table.data-table .num { text-align: center; }
 .match-effect.star { color: var(--legendary); }
 .match-effect.coach { color: var(--epic); }
 
+/* Inline orange star marker shown next to team names on the Groups
+   and Bracket tabs when a team has a legendary player or coach. */
+.legend-star {
+  color: var(--legendary);
+  font-size: 11px;
+  margin-left: 3px;
+  vertical-align: 1px;
+  text-shadow: 0 0 4px rgba(255, 152, 0, 0.5);
+}
+
 /* ── Star & Coach cards ───────────────────────────────────── */
 .star-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .star-card {

@@ -31,6 +31,22 @@ const flag = cc => `<span class="flag-emoji">${FLAG[cc] || '🏳️'}</span>`
 const tierBadge = t => `<span class="badge badge-${t}">${tierLabel(t)}</span>`
 const TIER_ORDER = ['legendary','epic','rare','uncommon','common']
 
+// Returns an orange star marker if the team has a legendary star or coach,
+// otherwise empty string. Used on the Groups and Bracket tabs to flag
+// legend-led sides at a glance. Includes the title attr so hovering on
+// desktop reveals which legend it is.
+function legendStar(team) {
+  if (!team) return ''
+  const stars = team.stars && team.stars.length ? team.stars : (team.star ? [team.star] : [])
+  const legendPlayer = stars.find(s => s?.tier === 'legendary')
+  const legendCoach = team.coach?.tier === 'legendary' ? team.coach : null
+  if (!legendPlayer && !legendCoach) return ''
+  const bits = []
+  if (legendPlayer) bits.push(`Legendary player: ${legendPlayer.name}`)
+  if (legendCoach)  bits.push(`Legendary coach: ${legendCoach.name}`)
+  return ` <span class="legend-star" title="${bits.join(' · ')}">★</span>`
+}
+
 // Parse emoji in the given element using Twemoji, which swaps emoji
 // chars for inline SVG/PNG images. Critically, this is what makes
 // flag emoji actually render on Windows (whose system fonts have no
@@ -1326,7 +1342,7 @@ function renderGroups() {
         const ovr = t.currentOverall || t.rating || 0
         return `<div class="group-team ${i < 2 ? 'qualifies' : ''}">
           <span class="team-flag-cell">${flag(t.cc)}</span>
-          <span class="team-name-cell">${t.name}</span>
+          <span class="team-name-cell">${t.name}${legendStar(t)}</span>
           <span class="hcell ovr-cell">${ovr}</span>
           <span class="hcell">${played}</span>
           <span class="hcell">${t.w||0}</span>
@@ -1370,8 +1386,8 @@ function renderBracket() {
     round.matches.forEach(m => {
       const w = m.result?.winner
       html += `<div class="bracket-match">
-        <div class="bracket-team ${w ? (w === m.t1 ? 'winner' : 'loser') : ''}">${m.t1 ? `${flag(m.t1.cc)} ${m.t1.name}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g1}</span>` : ''}</div>
-        <div class="bracket-team ${w ? (w === m.t2 ? 'winner' : 'loser') : ''}">${m.t2 ? `${flag(m.t2.cc)} ${m.t2.name}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g2}</span>` : ''}</div>
+        <div class="bracket-team ${w ? (w === m.t1 ? 'winner' : 'loser') : ''}">${m.t1 ? `${flag(m.t1.cc)} ${m.t1.name}${legendStar(m.t1)}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g1}</span>` : ''}</div>
+        <div class="bracket-team ${w ? (w === m.t2 ? 'winner' : 'loser') : ''}">${m.t2 ? `${flag(m.t2.cc)} ${m.t2.name}${legendStar(m.t2)}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g2}</span>` : ''}</div>
       </div>`
     })
     html += '</div>'
@@ -1379,7 +1395,7 @@ function renderBracket() {
   if (S.champion) {
     html += `<div class="bracket-col"><div class="bracket-round-name">CHAMPION</div>
       <div class="bracket-match" style="border-color:var(--gold)">
-        <div class="bracket-team winner" style="color:var(--gold)">🏆 ${flag(S.champion.cc)} ${S.champion.name}</div>
+        <div class="bracket-team winner" style="color:var(--gold)">🏆 ${flag(S.champion.cc)} ${S.champion.name}${legendStar(S.champion)}</div>
       </div></div>`
   }
   html += '</div></div>'

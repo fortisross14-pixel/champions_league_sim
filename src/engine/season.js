@@ -854,20 +854,38 @@ function finalizeSeasonStats() {
   // Round - Wins - Goals - Coach - Stars). Group-stage exits get
   // "Group" as their round; non-qualifiers (DNQ) are recorded
   // separately so we can show "DNQ" rows for all 81 teams.
+  //
+  // W/D/L/GF/GA are tallied across the entire tournament (group +
+  // knockout). The team objects themselves only carry group-stage
+  // counters (used for live group standings), so we re-aggregate
+  // from S.allMatchResults — which trackMatchStats populates for
+  // both phases — to get full-season totals.
+  const fullStats = {}
+  ;(S.allMatchResults || []).forEach(m => {
+    const a = fullStats[m.t1id] || (fullStats[m.t1id] = { w:0, d:0, l:0, gf:0, ga:0 })
+    const b = fullStats[m.t2id] || (fullStats[m.t2id] = { w:0, d:0, l:0, gf:0, ga:0 })
+    a.gf += m.g1; a.ga += m.g2
+    b.gf += m.g2; b.ga += m.g1
+    if (m.g1 > m.g2)      { a.w++; b.l++ }
+    else if (m.g2 > m.g1) { b.w++; a.l++ }
+    else                  { a.d++; b.d++ }
+  })
+
   const teamSeasons = S.teams.map(t => {
     const stars = (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
+    const fs = fullStats[t.id] || { w:0, d:0, l:0, gf:0, ga:0 }
     return {
       teamId: t.id,
       teamName: t.name,
       cc: t.cc,
       overall: t.currentOverall || 0,
       reached: S.roundReached[t.id] || 'Group',
-      played: (t.w || 0) + (t.d || 0) + (t.l || 0),
-      wins:   t.w || 0,
-      draws:  t.d || 0,
-      losses: t.l || 0,
-      gf:     t.gf || 0,
-      ga:     t.ga || 0,
+      played: fs.w + fs.d + fs.l,
+      wins:   fs.w,
+      draws:  fs.d,
+      losses: fs.l,
+      gf:     fs.gf,
+      ga:     fs.ga,
       coach:  t.coach ? { name: t.coach.name, tier: t.coach.tier } : null,
       stars:  stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
     }
