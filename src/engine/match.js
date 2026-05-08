@@ -62,6 +62,17 @@ export function getEffStats(team, isKO = false) {
       s.mental = clamp(s.mental + 5, 10, 130)
     }
   }
+  // Tournament mentality: a delta on top of the baseline mental
+  // stat that builds (or erodes) over the course of the tournament.
+  // Confidence shifts mental directly (full delta) and gives a
+  // smaller nudge to attack and defense.
+  const md = team.mentalityDelta || 0
+  if (md !== 0) {
+    s.mental  = clamp(s.mental  + md,        10, 130)
+    s.attack  = clamp(s.attack  + md * 0.4,  10, 130)
+    s.defense = clamp(s.defense + md * 0.4,  10, 130)
+  }
+
   return s
 }
 
@@ -73,16 +84,28 @@ export function getEffStats(team, isKO = false) {
 // xg formula: scaled diff between team A's attack and team B's defense
 // plus a small base. Set-pieces add a small bump. Mental gives a tiny
 // edge in close games.
+// Realistic football: ~2.6 goals per game on average, weighted by
+// attack-vs-defense matchups. We use a Poisson-flavored sampler and
+// clamp the high tail so blowouts are rare but possible.
+//
+// xg formula: scaled diff between team A's attack and team B's defense
+// plus a small base. Set-pieces add a small bump. Mental gives a tiny
+// edge in close games.
 function computeXG(myEff, oppEff) {
-  // Normalize to a 0..1 ratio.
+  // Normalize to a 0..1 ratio. We make the att/def differential
+  // weigh more heavily (was /25, now /18) so a 13-point overall gap
+  // produces a clearly-favored team — not a coin flip. The base and
+  // clamp ranges are also widened so heavy favorites really do
+  // dominate weaker teams (Real Madrid 100 vs Olympiakos 70 → ~2.8
+  // xG vs ~0.2 xG).
   const att = myEff.attack
   const def = oppEff.defense
   const sp  = myEff.setPieces
-  // Diff is roughly in -30..+30. Map to 0.4..2.2 expected goals.
-  const diff = (att - def) / 25            // ~ -1..+1
-  const base = 1.15 + diff                  // 0.15..2.15
+  // Diff in roughly -30..+30. Mapped to roughly -1.7..+1.7.
+  const diff = (att - def) / 18
+  const base = 1.15 + diff                  // ~ -0.55..+2.85
   const setPieceBonus = (sp - 75) * 0.005   // ±0.15
-  const xg = clamp(base + setPieceBonus, 0.25, 2.6)
+  const xg = clamp(base + setPieceBonus, 0.20, 3.2)
   return xg
 }
 
@@ -92,7 +115,7 @@ function samplePoisson(lambda) {
   const L = Math.exp(-lambda)
   let k = 0, p = 1
   do { k++; p *= Math.random() } while (p > L)
-  return clamp(k - 1, 0, 5)
+  return clamp(k - 1, 0, 7)
 }
 
 // ── Goal timing ───────────────────────────────────────────────
@@ -471,6 +494,74 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
     starRatingsT2.push({ id: s.id, name: s.name, pos: s.pos, tier: s.tier, rating: r, goals, saves })
   }
 
+  // ── Mentality changes ──────────────────────────────────────
+  // Each team's tournament mentality (a delta on top of a 60
+  // baseline) shifts with every match.
+  //
+  //   • Win:  +5 base. If you beat a higher-rated opponent, add
+  //     0.4 per rating point gap (so 79 beating 92 = +5.2 extra,
+  //     for ~+10 total). Big-margin win (3+ goal differential):
+  //     +3 extra.
+  //   • Loss: -3 base. BUT if the actual goal-diff is smaller than
+  //     the expected diff (heavy underdog only loses by a little),
+  //     the result can flip positive — surviving better than
+  //     anyone thought you would is a confidence boost.
+  //   • Draw: +1 if you were the underdog (rating gap >= 5),
+  //     -1 if you were the favorite (let a weaker side hold you),
+  //     0 otherwise.
+  //
+  // Caps each team's accumulated delta at ±20 so it doesn't
+  // snowball.
+  const r1 = t1.currentOverall || t1.rating || 75
+  const r2 = t2.currentOverall || t2.rating || 75
+  const ratingGap = r1 - r2          // positive = t1 is favorite
+  const goalDiff = g1 - g2           // positive = t1 won
+  const expectedDiff = ratingGap / 6 // rough expected goal diff (a 12-pt favorite is expected to win by 2)
+  const calcMentalityChange = (myRating, oppRating, myGoals, oppGoals) => {
+    const myGap = oppRating - myRating       // positive = I'm underdog
+    const myGoalDiff = myGoals - oppGoals    // positive = I won
+    const myExpectedDiff = -myGap / 6        // expected from MY perspective
+    let delta = 0
+    if (myGoalDiff > 0) {
+      // Win.
+      delta += 5
+      if (myGap > 0) delta += myGap * 0.4     // beat a stronger team
+      if (myGoalDiff >= 3) delta += 3         // dominant win
+      if (myGoalDiff >= 5) delta += 2         // crushing win
+    } else if (myGoalDiff < 0) {
+      // Loss. Compare actual margin to expected.
+      const surprise = myExpectedDiff - myGoalDiff   // negative if "even worse than expected"
+      if (myGap >= 8 && myGoalDiff >= -1) {
+        // Heavy underdog, kept it close — confidence boost.
+        delta += 2
+      } else if (surprise < -1) {
+        // Lost worse than expected.
+        delta -= 4
+        if (myGoalDiff <= -3) delta -= 2       // humiliation
+      } else {
+        // Roughly as expected, or close.
+        delta -= 3
+      }
+    } else {
+      // Draw.
+      if (myGap >= 5) delta += 1               // underdog held
+      else if (myGap <= -5) delta -= 1         // favorite slipped
+    }
+    return Math.round(delta)
+  }
+  const t1Delta = calcMentalityChange(r1, r2, g1, g2)
+  const t2Delta = calcMentalityChange(r2, r1, g2, g1)
+  const t1Before = t1.mentalityDelta || 0
+  const t2Before = t2.mentalityDelta || 0
+  const t1After = clamp(t1Before + t1Delta, -20, 20)
+  const t2After = clamp(t2Before + t2Delta, -20, 20)
+  // Caller (playGroupMatch / playKnockoutMatch) is responsible
+  // for applying these to the team objects. We just report.
+  const mentalityChanges = {
+    team1: { before: t1Before, change: t1Delta, after: t1After },
+    team2: { before: t2Before, change: t2Delta, after: t2After },
+  }
+
   return {
     t1, t2, g1, g2,
     winner, penalties,
@@ -478,6 +569,8 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
     shots1, shots2, corners1, corners2, possession1, possession2,
     // New: per-star ratings (the popup uses this).
     starRatings: { team1: starRatingsT1, team2: starRatingsT2 },
+    // Mentality changes from this match (popup shows these).
+    mentalityChanges,
   }
 }
 

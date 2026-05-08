@@ -560,6 +560,11 @@ export function runQualification() {
       leagueId: entry.league.id,
       leagueName: entry.league.name,
       pts:0, w:0, d:0, l:0, gf:0, ga:0, gd:0,
+      // Tournament mentality: starts at 0 delta (so effective = 60
+      // baseline + 0). Updates after every match based on result vs
+      // expected. Persists through groups and knockout. Resets each
+      // season when runQualification is called fresh.
+      mentalityDelta: 0,
       star:null, coach:null,
     }
   }
@@ -621,12 +626,22 @@ export function updateGroupStats(r) {
   else            { t1.d=(t1.d||0)+1; t1.pts=(t1.pts||0)+1; t2.d=(t2.d||0)+1; t2.pts=(t2.pts||0)+1 }
 }
 
+// Apply the mentality changes from a match result onto the team
+// objects. Both group and knockout matches do this — mentality
+// persists for the whole tournament.
+function applyMentalityDelta(r) {
+  if (!r.mentalityChanges) return
+  r.t1.mentalityDelta = r.mentalityChanges.team1.after
+  r.t2.mentalityDelta = r.mentalityChanges.team2.after
+}
+
 export function playGroupMatch(match) {
   if (match.played) return
   const r = simMatch(match.t1, match.t2, true, false)
   match.played = true
   match.result = r
   updateGroupStats(r)
+  applyMentalityDelta(r)
   trackMatchStats(r, 'group', match.gi)
   autoSave()
   return r
@@ -700,8 +715,13 @@ export function buildKnockout() {
     || (b.rating||0) - (a.rating||0)
   S.groups.forEach(grp => {
     const sorted = [...grp.teams].sort(cmp)
+    // Top 2 advance to R16.
     sorted.slice(0, 2).forEach(t => {
       if (!S.roundReached[t.id]) S.roundReached[t.id] = 'Round of 16'
+    })
+    // Bottom 2 are eliminated in the group stage.
+    sorted.slice(2).forEach(t => {
+      if (!S.roundReached[t.id]) S.roundReached[t.id] = 'Group'
     })
   })
   const winners = S.groups.map(g => [...g.teams].sort(cmp)[0])
@@ -717,6 +737,7 @@ export function playKnockoutMatch(match) {
   const r = simMatch(match.t1, match.t2, false, true)
   match.played = true
   match.result = r
+  applyMentalityDelta(r)
   trackMatchStats(r, 'knockout')
   autoSave()
   return r
@@ -732,6 +753,13 @@ export function advanceKnockout() {
 
   losers.forEach(t => {
     if (!S.roundReached[t.id]) S.roundReached[t.id] = round.name
+  })
+  // Clear winners' markers — they're still alive and shouldn't be
+  // tagged with a round they haven't been eliminated from. They'll
+  // get a fresh marker the next time they actually lose (or 'Winner'
+  // if they take the whole thing).
+  winners.forEach(t => {
+    if (S.roundReached[t.id] === round.name) delete S.roundReached[t.id]
   })
 
   if (winners.length === 1) {
@@ -753,6 +781,12 @@ export function advanceKnockout() {
 
 function finalizeSeasonStats() {
   const famePts = { Winner:300, Final:150, 'Semi-finals':75, 'Quarter-finals':30, 'Round of 16':10 }
+  // Players whose team made it to at least the quarterfinals are
+  // eligible for the offensive/defensive MVP awards. Group-stage and
+  // round-of-16 exits don't qualify, no matter how good their average
+  // rating was — winning when it matters is the bar.
+  const QF_OR_BETTER = new Set(['Quarter-finals', 'Semi-finals', 'Final', 'Winner'])
+
   // Gather every star on every qualified team — not just the headline one.
   const allStars = S.teams.flatMap(t => (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))).filter(Boolean)
   let topScorer=null, offMVP=null, defMVP=null
@@ -765,7 +799,11 @@ function finalizeSeasonStats() {
     else if (reached === 'Final') s.medals.silver++
     else if (reached === 'Semi-finals') s.medals.bronze++
 
+    // Top scorer is OPEN to anyone — goals are goals.
     if ((s.goals||0) > topGoals) { topGoals = s.goals; topScorer = s }
+
+    // MVP eligibility requires at least Quarter-finals.
+    if (!QF_OR_BETTER.has(reached)) return
     const avgR = s.ratings?.length ? (s.ratings.reduce((a,b)=>a+b,0)/s.ratings.length) : 0
     if (['FWD','MID'].includes(s.pos) && avgR > topOffRating) { topOffRating = avgR; offMVP = s }
     if (['DEF','GK'].includes(s.pos) && avgR > topDefRating)  { topDefRating = avgR; defMVP = s }

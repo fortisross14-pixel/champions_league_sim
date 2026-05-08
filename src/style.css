@@ -233,9 +233,31 @@ table.data-table .num { text-align: center; }
 .team-record { font-size: 10px; color: var(--txt3); }
 
 /* ── Bracket ──────────────────────────────────────────────── */
-.bracket-scroll { overflow-x: auto; padding-bottom: 8px; }
-.bracket-rounds { display: flex; gap: 16px; padding: 8px 0; min-width: max-content; }
-.bracket-col { display: flex; flex-direction: column; gap: 8px; min-width: 170px; }
+.bracket-scroll {
+  overflow-x: auto;
+  /* IMPORTANT: don't try to mix overflow-y:visible with overflow-x:auto
+     — per spec the browser will silently clip Y too. Let the panel's
+     own overflow-y handle scrolling. */
+  -webkit-overflow-scrolling: touch;
+  /* Generous bottom padding so the last match in the tallest column
+     (Round of 16, 8 matches) never gets cut off behind the panel
+     edge or any soft-keyboard / browser chrome. */
+  padding-bottom: 60px;
+}
+.bracket-rounds {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0 16px;
+  min-width: max-content;
+  align-items: flex-start;
+}
+.bracket-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+  flex-shrink: 0;
+}
 .bracket-round-name {
   font-family: var(--font-head); font-size: 11px; font-weight: 700;
   letter-spacing: .12em; color: var(--txt3); text-align: center;
@@ -1300,4 +1322,89 @@ img.twemoji-img {
   display: inline-flex;
   align-items: center;
   min-width: 18px;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Mentality block (post-match summary)                       */
+/* ─────────────────────────────────────────────────────────── */
+.mentality-block {
+  margin: 10px 0;
+  padding: 10px 14px;
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+  border-radius: var(--R);
+}
+.mentality-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.mentality-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mentality-side.right { text-align: right; }
+.mentality-team {
+  font-size: 11px;
+  color: var(--txt2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mentality-val {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mentality-side.right .mentality-val { justify-content: flex-end; }
+.mentality-num {
+  font-family: var(--font-head);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--txt);
+}
+.mentality-label {
+  font-family: var(--font-head);
+  font-size: 9.5px;
+  letter-spacing: .14em;
+  color: var(--txt3);
+  text-transform: uppercase;
+  text-align: center;
+}
+
+/* OVR badge in group standings + upcoming-match cards. */
+.ovr-cell {
+  color: var(--gold) !important;
+  font-weight: 700 !important;
+  font-size: 11px;
+}
+.group-headers .hcell:nth-child(3) {
+  color: var(--gold);
+}
+.ovr-pill {
+  display: inline-block;
+  background: rgba(240,192,64,.10);
+  border: 1px solid rgba(240,192,64,.35);
+  color: var(--gold);
+  font-family: var(--font-head);
+  font-weight: 700;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  vertical-align: middle;
+  margin: 0 4px;
+  letter-spacing: .04em;
+}
+
+.cl-stat-sub {
+  font-size: 9.5px;
+  letter-spacing: .12em;
+  color: var(--txt3);
+  text-transform: uppercase;
+  margin-top: -4px;
+  margin-bottom: 6px;
+  font-family: var(--font-head);
 }

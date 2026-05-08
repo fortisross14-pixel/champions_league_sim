@@ -509,10 +509,44 @@ function renderFinalSummary(r) {
       ${coachBlock('COACH — ' + r.t2.name.toUpperCase(), r.t2.coach, true)}
     </div>
 
+    ${r.mentalityChanges ? renderMentalityBlock(r) : ''}
+
     ${r.effects?.length ? `<div class="playback-effects">
       ${r.effects.map(e => `<div class="effect-line ${e.includes('⭐')?'star':e.includes('📋')?'coach':''}">${e}</div>`).join('')}
     </div>` : ''}
   `
+}
+
+// Render the mentality-change box for the post-match summary.
+function renderMentalityBlock(r) {
+  const fmt = (mc) => {
+    const total = 60 + mc.after  // displayed "real" mentality
+    const sign = mc.change > 0 ? '+' : ''
+    const cls  = mc.change > 0 ? 'rating-green' : mc.change < 0 ? 'rating-red' : ''
+    return { total, sign, cls }
+  }
+  const a = fmt(r.mentalityChanges.team1)
+  const b = fmt(r.mentalityChanges.team2)
+  return `
+    <div class="mentality-block">
+      <div class="mentality-row">
+        <div class="mentality-side left">
+          <div class="mentality-team">${flag(r.t1.cc)} ${r.t1.name}</div>
+          <div class="mentality-val">
+            <span class="mentality-num">${a.total}</span>
+            <span class="rating-val ${a.cls}">${a.sign}${r.mentalityChanges.team1.change}</span>
+          </div>
+        </div>
+        <div class="mentality-label">MENTALITY</div>
+        <div class="mentality-side right">
+          <div class="mentality-team">${r.t2.name} ${flag(r.t2.cc)}</div>
+          <div class="mentality-val">
+            <span class="rating-val ${b.cls}">${b.sign}${r.mentalityChanges.team2.change}</span>
+            <span class="mentality-num">${b.total}</span>
+          </div>
+        </div>
+      </div>
+    </div>`
 }
 
 window.skipPlayback = function () { _playbackSkip = true }
@@ -694,6 +728,7 @@ function renderUpcomingGames() {
     }
   }
   if (!upcoming.length) return ''
+  const ovr = t => t.currentOverall || t.rating || 0
   return `<div class="sec">${label}</div>` + upcoming.map((m, i) => {
     const groupTag = S.phase === 'groups' && S.groups[m.gi]
       ? `<span class="upcoming-tag">Group ${S.groups[m.gi].id}</span>`
@@ -701,9 +736,9 @@ function renderUpcomingGames() {
     const nextBadge = i === 0 ? '<span class="upcoming-next">NEXT</span>' : ''
     return `<div class="match-result-card upcoming-match">
       <div class="match-teams">
-        <div class="match-team">${flag(m.t1.cc)} ${m.t1.name}</div>
+        <div class="match-team">${flag(m.t1.cc)} ${m.t1.name} <span class="ovr-pill">${ovr(m.t1)}</span></div>
         <div class="upcoming-vs">vs ${groupTag}${nextBadge}</div>
-        <div class="match-team right">${m.t2.name} ${flag(m.t2.cc)}</div>
+        <div class="match-team right"><span class="ovr-pill">${ovr(m.t2)}</span> ${m.t2.name} ${flag(m.t2.cc)}</div>
       </div>
     </div>`
   }).join('')
@@ -1019,6 +1054,7 @@ function renderGroups() {
       <div class="group-headers">
         <span class="team-flag-cell"></span>
         <span class="team-name-cell"></span>
+        <span class="hcell" title="Overall rating">OVR</span>
         <span class="hcell">P</span>
         <span class="hcell">W</span>
         <span class="hcell">D</span>
@@ -1029,9 +1065,11 @@ function renderGroups() {
       </div>
       ${sorted.map((t, i) => {
         const played = (t.w||0) + (t.d||0) + (t.l||0)
+        const ovr = t.currentOverall || t.rating || 0
         return `<div class="group-team ${i < 2 ? 'qualifies' : ''}">
           <span class="team-flag-cell">${flag(t.cc)}</span>
           <span class="team-name-cell">${t.name}</span>
+          <span class="hcell ovr-cell">${ovr}</span>
           <span class="hcell">${played}</span>
           <span class="hcell">${t.w||0}</span>
           <span class="hcell">${t.d||0}</span>
@@ -1559,13 +1597,33 @@ function renderSeasonCL() {
   const topScorers = Object.entries(S.scorers || {}).sort((a,b) => b[1] - a[1]).slice(0, 8)
 
   // Highest-rated offensive (FWD/MID) and defensive (DEF/GK) stars.
-  // Walks EVERY star on every qualified team — not just team.star —
-  // because per-match ratings are written to individual stars in
-  // team.stars[]. (After save/load t.star may even reference a stale
-  // copy, so reading from t.stars is also more reliable.)
+  // Walks EVERY star on every qualified team.
+  //
+  // ELIGIBILITY: once we know who's made the quarter-finals, only
+  // their players are eligible. A team is "in" the QF if either:
+  //   1. They're playing in (or beyond) the QF round — i.e., their
+  //      roundReached marker isn't 'Round of 16' or 'Group'.
+  //   2. The R16 round hasn't finished yet, in which case we can't
+  //      filter at all (we don't know who made it).
+  //
+  // The filter activates the moment the R16 round is fully played
+  // — i.e., advanceKnockout has run and a QF round exists.
+  const currentRound = S.knockoutRounds?.[S.knockoutRounds.length - 1]
+  const r16Done = currentRound && currentRound.name !== 'Round of 16'
+                  && currentRound.name !== 'Group Stage'
+
+  const isMVPEligible = (s) => {
+    if (!r16Done) return true       // R16 not yet finished — everyone visible
+    const reached = S.roundReached?.[s.teamId]
+    // Eliminated in groups or R16 → out. Still active or eliminated
+    // later (QF, SF, Final) → eligible.
+    if (reached === 'Group' || reached === 'Round of 16') return false
+    return true
+  }
+
   const ratedStars = (S.teams || [])
     .flatMap(t => t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
-    .filter(s => s && s.ratings?.length)
+    .filter(s => s && s.ratings?.length && isMVPEligible(s))
   const avg = s => s.ratings.reduce((a,b) => a+b, 0) / s.ratings.length
   const offensives = ratedStars.filter(s => ['FWD','MID'].includes(s.pos)).map(s => ({ s, r: avg(s) }))
     .sort((a,b) => b.r - a.r).slice(0, 5)
@@ -1599,8 +1657,14 @@ function renderSeasonCL() {
     </tbody></table>` : '<div class="empty">No goals yet</div>'}
   </div>`
 
+  // Subtitle hint shown when the QF eligibility filter is in effect.
+  const qfHint = r16Done
+    ? '<div class="cl-stat-sub">QF qualifiers only</div>'
+    : ''
+
   html += `<div class="card cl-stat-card">
     <div class="cl-stat-title">🌟 Highest-Rated Attackers</div>
+    ${qfHint}
     ${offensives.length ? `<table class="data-table compact"><tbody>
       ${offensives.map(({s,r}, i) => `<tr style="cursor:pointer" onclick="window.openStarDetail('${s.id}')">
         <td style="color:var(--txt3);width:24px">${i+1}</td>
@@ -1612,6 +1676,7 @@ function renderSeasonCL() {
 
   html += `<div class="card cl-stat-card">
     <div class="cl-stat-title">🛡️ Highest-Rated Defenders</div>
+    ${qfHint}
     ${defensives.length ? `<table class="data-table compact"><tbody>
       ${defensives.map(({s,r}, i) => `<tr style="cursor:pointer" onclick="window.openStarDetail('${s.id}')">
         <td style="color:var(--txt3);width:24px">${i+1}</td>
