@@ -7,6 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/src/style.css">
+<!-- Twemoji renders flag/regional-indicator emoji as images so they
+     show up consistently on Windows (where the system fonts have no
+     flag glyphs at all) and other platforms with limited emoji
+     support. main.js calls `window.twemoji.parse(document.body)` after
+     each render. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/twemoji.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -34,6 +40,7 @@
     <button class="nav-tab active" data-tab="play" onclick="switchTab('play')">⚽ Play</button>
     <button class="nav-tab" data-tab="groups" onclick="switchTab('groups')">👥 Groups</button>
     <button class="nav-tab" data-tab="bracket" onclick="switchTab('bracket')">🏆 Bracket</button>
+    <button class="nav-tab" data-tab="season" onclick="switchTab('season')">📅 Season</button>
     <button class="nav-tab" data-tab="stars" onclick="switchTab('stars')">⭐ Stars & Coaches</button>
     <button class="nav-tab" data-tab="teams" onclick="switchTab('teams')">📊 Teams</button>
     <button class="nav-tab" data-tab="history" onclick="switchTab('history')">📜 History</button>
@@ -43,6 +50,7 @@
     <div id="tab-play" class="panel active"></div>
     <div id="tab-groups" class="panel"></div>
     <div id="tab-bracket" class="panel"></div>
+    <div id="tab-season" class="panel"></div>
     <div id="tab-stars" class="panel"></div>
     <div id="tab-teams" class="panel"></div>
     <div id="tab-history" class="panel"></div>
@@ -73,10 +81,25 @@
       <span>Save Manager</span>
       <button class="btn btn-icon" onclick="closeSaveManager()">✕</button>
     </div>
-    <div class="save-new">
-      <input id="save-name" class="input" placeholder="Name this save…">
-      <button class="btn btn-primary btn-sm" onclick="doSaveSlot()">Save</button>
+
+    <div class="saves-help">
+      Saves live in this browser. They survive refreshes but can be wiped if you clear site data.
+      <strong>Export to a file</strong> for anything you'd be sad to lose.
     </div>
+
+    <div class="save-new">
+      <input id="save-name" class="input" placeholder="Name this save (e.g. 'Season 8 — finals')…">
+      <button class="btn btn-primary btn-sm" onclick="doSaveSlot()">Save Slot</button>
+    </div>
+
+    <div class="saves-actions">
+      <button class="btn btn-sm" onclick="doExport()">📤 Export to file</button>
+      <label class="btn btn-sm" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+        📥 Import from file
+        <input type="file" accept=".json" style="display:none" onchange="doImport(event)">
+      </label>
+    </div>
+
     <div id="saves-list"></div>
   </div>
 </div>
