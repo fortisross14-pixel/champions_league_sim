@@ -302,82 +302,138 @@ function preserveWinner(rawA, rawB, normA, normB) {
 }
 
 // ── Star goal attribution ────────────────────────────────────
-// Distribute the team's final goals among its stars, weighted by
-// trait fit + position + tier. Goals not assigned to a star are
-// labelled with the team name.
+// Goals don't *automatically* belong to stars. Each FWD/MID rolls
+// their per-match goalDist (the same one they had before) to
+// decide how many goals THEY claim — that's how many goals can
+// be tagged with their name. Anything else is a team goal.
+//
+// On top of that, we use trait fit (Precise Shooter on a shot
+// goal, Dead-Ball Specialist on a corner goal, etc.) and tier
+// to *prefer* certain stars when assigning the kinds of goal
+// they should be claiming. A Rare MID with no trait will
+// occasionally claim 1, almost never 2, never 3. A legendary
+// FWD with Precise Shooting will routinely claim 1-2, sometimes
+// 3. A defender's defensive saves are unaffected — those happen
+// elsewhere; this function only handles offensive credit.
+//
+// DEF and GK stars only get goals tagged to them if their
+// goalDist actually rolls above zero (rare for DEF, near-zero
+// for GK), AND if the goal is a corner-kind goal (header from
+// a set piece) when they're a DEF. Otherwise their saves get
+// the spotlight, not goals.
 function attributeGoals(team, totalGoals, breakdown) {
   const result = new Map()
   if (totalGoals <= 0) return result
   const stars = team.stars && team.stars.length ? team.stars : (team.star ? [team.star] : [])
   if (!stars.length) return result
 
-  // Build the queue of "kinds" of goal (shot/poss/corner) using the
-  // breakdown proportions from statsToGoals.
+  // 1. Each star rolls how many goals they personally claim
+  //    this match (their goalDist). This caps how many goals
+  //    can be tagged to them. Most rolls return 0.
+  const claims = new Map()   // star → goals they're allowed to claim
+  let totalClaim = 0
+  for (const s of stars) {
+    const dist = s.goalDist || [1,0,0,0,0]
+    const r = Math.random()
+    let acc = 0, claim = 0
+    for (let i = 0; i < dist.length; i++) {
+      acc += dist[i]
+      if (r < acc) { claim = i; break }
+    }
+    if (claim > 0) {
+      claims.set(s, claim)
+      totalClaim += claim
+    }
+  }
+
+  // 2. If the team scored more goals than stars claimed, the
+  //    rest are unattributed (team goals — shown as the team
+  //    name in the timeline).
+  // 3. If stars claimed *more* than the team actually scored
+  //    (because the engine output is fewer goals than their
+  //    rolls suggested), trim down: distribute the available
+  //    goals among claimers using trait/position fit weighted
+  //    against the kind queue from breakdown.
+  const available = Math.min(totalClaim, totalGoals)
+  if (available <= 0) return result   // nothing to attribute
+
+  // Build the kinds queue (one entry per AVAILABLE star goal).
   const breakdownTotal = breakdown.shotGoals + breakdown.possGoals + breakdown.cornerGoals
   const kinds = []
   if (breakdownTotal > 0) {
-    const pShot   = breakdown.shotGoals   / breakdownTotal
-    const pPoss   = breakdown.possGoals   / breakdownTotal
-    for (let i = 0; i < totalGoals; i++) {
+    const pShot = breakdown.shotGoals / breakdownTotal
+    const pPoss = breakdown.possGoals / breakdownTotal
+    for (let i = 0; i < available; i++) {
       const r = Math.random()
       if      (r < pShot)         kinds.push('shot')
       else if (r < pShot + pPoss) kinds.push('poss')
       else                         kinds.push('corner')
     }
   } else {
-    for (let i = 0; i < totalGoals; i++) kinds.push('shot')
+    for (let i = 0; i < available; i++) kinds.push('shot')
   }
 
+  // Per-kind weighting among claimers: trait fit + position fit
+  // + tier. Lower-tier stars without matching traits will
+  // mostly only claim shot-kind goals (and even those rarely,
+  // since their goalDist is sparse).
   const tierWeight = { legendary:5, epic:4, rare:3, uncommon:2, common:1 }
   function scoreFor(star, kind) {
     let score = 0
     if (kind === 'shot') {
       if      (star.pos === 'FWD') score += 6
       else if (star.pos === 'MID') score += 3
-      else                         score += 0.5
+      else if (star.pos === 'DEF') score += 0.5
+      else                         score  = 0
     } else if (kind === 'poss') {
       if      (star.pos === 'MID') score += 5
       else if (star.pos === 'FWD') score += 4
-      else                         score += 1
+      else if (star.pos === 'DEF') score += 0.8
+      else                         score  = 0
     } else { // corner
       if      (star.pos === 'FWD') score += 4
       else if (star.pos === 'MID') score += 3
-      else if (star.pos === 'DEF') score += 4   // headers from set pieces
-      else                         score += 0.5
+      else if (star.pos === 'DEF') score += 4
+      else                         score  = 0
     }
     score += tierWeight[star.tier] || 1
     const tid = star.trait?.id
-    if (tid === 'precise_shooting'      && kind === 'shot')   score += 6
-    if (tid === 'penalty_box_predator')                       score += 2
-    if (tid === 'useful_possession'     && kind === 'poss')   score += 5
-    if (tid === 'dead_ball_specialist'  && kind === 'corner') score += 6
-    if (tid === 'goal_mentality'        && kind === 'shot')   score += 2
-    if (tid === 'look_for_corner'       && kind === 'corner') score += 3
+    if (tid === 'precise_shooting'     && kind === 'shot')   score += 6
+    if (tid === 'penalty_box_predator')                      score += 2
+    if (tid === 'useful_possession'    && kind === 'poss')   score += 5
+    if (tid === 'dead_ball_specialist' && kind === 'corner') score += 6
+    if (tid === 'goal_mentality'       && kind === 'shot')   score += 2
+    if (tid === 'look_for_corner'      && kind === 'corner') score += 3
     return score
   }
 
-  // Penalty Box Predator: gets the FIRST goal of the match (we'll
-  // enforce the minute later; here just claim one slot).
+  // Penalty Box Predator: claims the first goal IF they rolled
+  // a claim. Otherwise this trait does nothing — even predators
+  // need to roll the goal dice.
   const predator = stars.find(s => s.trait?.id === 'penalty_box_predator')
-  if (predator && kinds.length > 0) {
+  if (predator && claims.get(predator) > 0 && kinds.length > 0) {
     result.set(predator, 1)
+    claims.set(predator, claims.get(predator) - 1)
+    if (claims.get(predator) <= 0) claims.delete(predator)
     kinds.shift()
   }
 
   for (const kind of kinds) {
-    const scores = stars.map(s => scoreFor(s, kind))
+    // Eligible = stars who still have claim capacity left, and
+    // whose position can plausibly score this kind.
+    const eligible = stars.filter(s => (claims.get(s) || 0) > 0 && scoreFor(s, kind) > 0)
+    if (!eligible.length) break
+    const scores = eligible.map(s => scoreFor(s, kind))
     const sum = scores.reduce((a,b) => a+b, 0)
-    if (sum <= 0) continue
     let r = Math.random() * sum
-    let chosen = stars[0]
-    for (let i = 0; i < stars.length; i++) {
+    let chosen = eligible[0]
+    for (let i = 0; i < eligible.length; i++) {
       r -= scores[i]
-      if (r <= 0) { chosen = stars[i]; break }
+      if (r <= 0) { chosen = eligible[i]; break }
     }
-    // Soft cap so one star doesn't claim every goal in a 5-goal match.
-    const cap = (chosen.pos === 'FWD' && chosen.tier === 'legendary') ? 5 : 3
-    if ((result.get(chosen) || 0) >= cap) continue
     result.set(chosen, (result.get(chosen) || 0) + 1)
+    claims.set(chosen, claims.get(chosen) - 1)
+    if (claims.get(chosen) <= 0) claims.delete(chosen)
   }
 
   return result
