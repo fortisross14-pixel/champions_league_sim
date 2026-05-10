@@ -13,6 +13,7 @@ import {
   tierOf, tierLabel, tierColor,
   describeStarSkills, describeCoachSkills,
   COACH_TRAITS,
+  regenStarSkills, regenCoachSkills,
 } from './engine/season.js'
 import { ovr, getEffStats } from './engine/match.js'
 import { COUNTRY_NAME } from './data/players.js'
@@ -972,9 +973,26 @@ window.openStarDetail = function(starId) {
   showDetailModal(renderStarDetailHTML(star))
 }
 window.openCoachDetail = function(coachId) {
-  const coach = (S.coaches || []).find(c => c.id === coachId)
-  if (!coach) return toast('Coach not found.')
-  showDetailModal(renderCoachDetailHTML(coach))
+  const live = (S.coaches || []).find(c => c.id === coachId)
+  // Even retired coaches can be opened — their per-season records
+  // and career totals live in S.coachStats / S.history. Build a stub
+  // when we don't have the live object.
+  if (live) return showDetailModal(renderCoachDetailHTML(live))
+  const career = S.coachStats?.[coachId]
+  if (!career) return toast('Coach not found.')
+  // Find any historical snapshot to recover trait/skills info if any.
+  const histCoach = [...(S.history || [])].reverse()
+    .flatMap(h => [...(h.teamSeasons || []), ...(h.dnqTeams || [])])
+    .map(ts => ts.coach).find(c => c?.id === coachId)
+  showDetailModal(renderCoachDetailHTML({
+    id: coachId,
+    name: career.name,
+    tier: career.tier || histCoach?.tier,
+    nationality: career.nationality || 'eu',
+    teamId: null,
+    teamName: career.lastTeamName || '—',
+    retired: true,
+  }))
 }
 window.openTeamDetail = function(teamId) {
   const team = (S.allTeams || []).find(t => t.id === teamId)
@@ -1140,29 +1158,138 @@ function renderStarDetailHTML(star) {
 function renderCoachDetailHTML(coach) {
   const team = (S.allTeams || []).find(t => t.id === coach.teamId)
   const skills = describeCoachSkills(coach)
-  const age = (S.season || 1) - (coach.season || 1)
+  const career = S.coachStats?.[coach.id]
+  const isRetired = !!coach.retired || !S.coaches?.find(c => c.id === coach.id)
+  const age = !isRetired && coach.season ? (S.season || 1) - coach.season : null
+
+  // Walk S.history newest-first to build per-season rows for this
+  // coach. Each season they led a team (CL or DNQ), pick up which
+  // team and how that team performed. The team's per-season W/D/L/GF/
+  // GA come straight off the snapshot we made in finalizeSeasonStats.
+  const rows = []
+  ;[...(S.history || [])].reverse().forEach(h => {
+    let entry = null, isDNQ = false
+    const qual = (h.teamSeasons || []).find(ts => ts.coach?.id === coach.id)
+    if (qual) entry = qual
+    else {
+      const dnq = (h.dnqTeams || []).find(ts => ts.coach?.id === coach.id)
+      if (dnq) { entry = dnq; isDNQ = true }
+    }
+    if (!entry) return
+    rows.push({
+      season: h.season,
+      teamId: entry.teamId,
+      teamName: entry.teamName,
+      teamCC: entry.cc,
+      reached: isDNQ ? 'DNQ' : entry.reached,
+      played: isDNQ ? 0 : (entry.played ?? 0),
+      wins:   isDNQ ? 0 : (entry.wins ?? 0),
+      gf:     isDNQ ? 0 : (entry.gf ?? 0),
+      ga:     isDNQ ? 0 : (entry.ga ?? 0),
+    })
+  })
+
+  // Inject the in-progress current season at the top (only if the
+  // coach is actively leading a CL team this season).
+  const liveTeam = team && S.teams?.find(t => t.id === team.id)
+  if (liveTeam && S.phase !== 'idle' && S.phase !== 'done') {
+    rows.unshift({
+      season: S.season,
+      teamId: liveTeam.id,
+      teamName: liveTeam.name,
+      teamCC: liveTeam.cc,
+      reached: 'In progress',
+      played: (liveTeam.w || 0) + (liveTeam.d || 0) + (liveTeam.l || 0),
+      wins:   liveTeam.w || 0,
+      gf:     liveTeam.gf || 0,
+      ga:     liveTeam.ga || 0,
+      current: true,
+    })
+  }
+
+  const reachLabel = (r) => {
+    if (r === 'In progress')    return '<span style="color:var(--blue2)">In progress</span>'
+    if (r === 'DNQ')            return '<span style="color:var(--txt3)">DNQ</span>'
+    if (r === 'Group')          return '<span style="color:var(--txt2)">Group</span>'
+    if (r === 'Round of 16')    return '<span style="color:var(--txt2)">R16</span>'
+    if (r === 'Quarter-finals') return '<span style="color:#f0c040">QF</span>'
+    if (r === 'Semi-finals')    return '<span style="color:#f0c040">SF</span>'
+    if (r === 'Final')          return '<span style="color:var(--gold)">Final</span>'
+    if (r === 'Winner')         return '<span style="color:var(--gold)">🏆 Champion</span>'
+    return r
+  }
+
+  // Career-totals strip — UCL titles, local titles, totals across
+  // every team they've led.
+  const summary = career ? `
+    <div class="career-awards">
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${career.titles || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.finals || 0}</div><div class="career-award-label">Finals lost</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--txt2)">${career.semiFinals || 0}</div><div class="career-award-label">Semis</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--txt2)">${career.quarterFinals || 0}</div><div class="career-award-label">QFs</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--legendary)">${career.localTitles || 0}</div><div class="career-award-label">Local Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${career.seasons || 0}</div><div class="career-award-label">Seasons</div></div>
+    </div>
+    <div class="career-awards" style="margin-top:8px">
+      <div class="career-award-card"><div class="career-award-num">${career.played || 0}</div><div class="career-award-label">CL Games</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--green)">${career.wins || 0}</div><div class="career-award-label">Wins</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.draws || 0}</div><div class="career-award-label">Draws</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.losses || 0}</div><div class="career-award-label">Losses</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.goalsFor || 0}</div><div class="career-award-label">Goals For</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.goalsAgainst || 0}</div><div class="career-award-label">Goals Against</div></div>
+    </div>` : ''
+
+  const careerTable = rows.length ? `
+    <div class="career-section-title">SEASON-BY-SEASON</div>
+    <div class="table-wrap"><table class="data-table compact career-table"><thead><tr>
+      <th class="num">Yr</th>
+      <th>Club</th>
+      <th>Result</th>
+      <th class="num">P</th>
+      <th class="num">W</th>
+      <th class="num">GF</th>
+      <th class="num">GA</th>
+    </tr></thead><tbody>
+    ${rows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
+      <td class="num"><strong>${row.season}</strong></td>
+      <td><span class="team-name-link" onclick="window.openTeamDetail('${row.teamId}')">${flag(row.teamCC)} ${row.teamName}</span></td>
+      <td style="font-size:11px">${reachLabel(row.reached)}</td>
+      <td class="num">${row.played != null ? row.played : '—'}</td>
+      <td class="num" style="color:var(--green)">${row.wins != null ? row.wins : '—'}</td>
+      <td class="num">${row.gf != null ? row.gf : '—'}</td>
+      <td class="num">${row.ga != null ? row.ga : '—'}</td>
+    </tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">No completed seasons logged yet for this coach.</div>'
+
+  // Header club line: live team if active, else "Retired" + last club.
+  const clubLine = isRetired
+    ? `<span style="color:var(--txt3)">Retired</span>${career?.lastTeamName ? ` · last at ${flag(career.lastTeamCC || '')} ${career.lastTeamName}` : ''}`
+    : `${flag(team?.cc || coach.nationality || '')} ${team?.name || coach.teamName || '—'}`
+
   return `
     <div class="playback-header">
       <div class="playback-round">Coach Profile</div>
-      ${tierBadge(coach.tier)}
+      ${coach.tier ? tierBadge(coach.tier) : ''}
     </div>
     <div style="font-family:var(--font-head);font-size:24px;font-weight:700;margin-bottom:4px">${coach.name}</div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">
-      ${flag(coach.nationality)} ${COUNTRY_NAME[coach.nationality] || coach.nationality || '—'} ·
-      ${flag(team?.cc || '')} ${team?.name || coach.teamName || '—'}
+      ${flag(coach.nationality || '')} ${COUNTRY_NAME[coach.nationality] || coach.nationality || '—'} ·
+      ${clubLine}
     </div>
-    <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">
+    ${age != null ? `<div style="font-size:11px;color:var(--txt3);margin-bottom:12px">
       ${age}/${coach.lifespan} seasons at the club
-    </div>
+    </div>` : ''}
     ${coach.trait ? `
     <div style="background:linear-gradient(135deg, rgba(255,152,0,.12), rgba(255,152,0,.04)); border:1px solid rgba(255,152,0,.3); border-radius:var(--r); padding:10px 12px; margin-bottom:12px">
       <div style="font-family:var(--font-head); font-size:11px; letter-spacing:.14em; color:var(--gold); text-transform:uppercase; margin-bottom:4px">${coach.trait.tier === 'legendary' ? '★ Legendary Trait' : '★ Epic Trait'}</div>
       <div style="font-weight:700; margin-bottom:2px">${coach.trait.name}</div>
       <div style="font-size:11px; color:var(--txt2)">${coach.trait.description}</div>
     </div>` : ''}
-    <div class="star-skills">
+    ${skills?.length ? `<div class="star-skills">
       ${skills.map(s => `<div class="star-skill-line">${s}</div>`).join('')}
-    </div>`
+    </div>` : ''}
+    ${summary}
+    ${careerTable}`
 }
 
 function renderTeamDetailHTML(team) {
@@ -1342,7 +1469,7 @@ function renderGroups() {
         const ovr = t.currentOverall || t.rating || 0
         return `<div class="group-team ${i < 2 ? 'qualifies' : ''}">
           <span class="team-flag-cell">${flag(t.cc)}</span>
-          <span class="team-name-cell">${t.name}${legendStar(t)}</span>
+          <span class="team-name-cell"><span class="team-name-link" onclick="window.openTeamDetail('${t.id}')">${t.name}</span>${legendStar(t)}</span>
           <span class="hcell ovr-cell">${ovr}</span>
           <span class="hcell">${played}</span>
           <span class="hcell">${t.w||0}</span>
@@ -1362,9 +1489,9 @@ function renderGroups() {
     html += played.slice(-12).reverse().map(m => `<div class="match-result-card" style="padding:8px 12px">
       <div style="font-size:9px;color:var(--txt3);font-family:var(--font-head)">GROUP ${S.groups[m.gi]?.id}</div>
       <div class="match-teams" style="margin-top:3px">
-        <div class="match-team">${flag(m.t1.cc)} ${m.t1.name}</div>
+        <div class="match-team">${flag(m.t1.cc)} <span class="team-name-link" onclick="window.openTeamDetail('${m.t1.id}')">${m.t1.name}</span></div>
         <div class="match-score" style="font-size:18px">${m.result.g1} – ${m.result.g2}</div>
-        <div class="match-team right">${m.t2.name} ${flag(m.t2.cc)}</div>
+        <div class="match-team right"><span class="team-name-link" onclick="window.openTeamDetail('${m.t2.id}')">${m.t2.name}</span> ${flag(m.t2.cc)}</div>
       </div>
     </div>`).join('')
   }
@@ -1385,9 +1512,12 @@ function renderBracket() {
     html += `<div class="bracket-col"><div class="bracket-round-name">${round.name}</div>`
     round.matches.forEach(m => {
       const w = m.result?.winner
+      const cell = (t) => t
+        ? `${flag(t.cc)} <span class="team-name-link" onclick="window.openTeamDetail('${t.id}')">${t.name}</span>${legendStar(t)}`
+        : '-'
       html += `<div class="bracket-match">
-        <div class="bracket-team ${w ? (w === m.t1 ? 'winner' : 'loser') : ''}">${m.t1 ? `${flag(m.t1.cc)} ${m.t1.name}${legendStar(m.t1)}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g1}</span>` : ''}</div>
-        <div class="bracket-team ${w ? (w === m.t2 ? 'winner' : 'loser') : ''}">${m.t2 ? `${flag(m.t2.cc)} ${m.t2.name}${legendStar(m.t2)}` : '-'}${m.result ? `<span class="bracket-score">${m.result.g2}</span>` : ''}</div>
+        <div class="bracket-team ${w ? (w === m.t1 ? 'winner' : 'loser') : ''}">${cell(m.t1)}${m.result ? `<span class="bracket-score">${m.result.g1}</span>` : ''}</div>
+        <div class="bracket-team ${w ? (w === m.t2 ? 'winner' : 'loser') : ''}">${cell(m.t2)}${m.result ? `<span class="bracket-score">${m.result.g2}</span>` : ''}</div>
       </div>`
     })
     html += '</div>'
@@ -1395,7 +1525,7 @@ function renderBracket() {
   if (S.champion) {
     html += `<div class="bracket-col"><div class="bracket-round-name">CHAMPION</div>
       <div class="bracket-match" style="border-color:var(--gold)">
-        <div class="bracket-team winner" style="color:var(--gold)">🏆 ${flag(S.champion.cc)} ${S.champion.name}${legendStar(S.champion)}</div>
+        <div class="bracket-team winner" style="color:var(--gold)">🏆 ${flag(S.champion.cc)} <span class="team-name-link" onclick="window.openTeamDetail('${S.champion.id}')">${S.champion.name}</span>${legendStar(S.champion)}</div>
       </div></div>`
   }
   html += '</div></div>'
@@ -1409,10 +1539,32 @@ let teamSort = 'overall'
 
 function renderTeams() {
   const el = $('tab-teams')
-  if (!el || !S.teams?.length) {
+  // Show every team in the world, not just the 32 CL-qualified ones.
+  const allTeams = S.allTeams || []
+  if (!el || !allTeams.length) {
     if (el) el.innerHTML = '<div class="empty">No teams yet — qualify first.</div>'
     return
   }
+  // Build view-model rows: getEffStats expects `team.stats` and
+  // `team.coach`, but allTeams entries store stats as `seasonStats`
+  // and only carry a coachId. Resolve both here so sorts work and
+  // the coach badge can render.
+  const coachById = {}
+  ;(S.coaches || []).forEach(c => { coachById[c.teamId] = c })
+  const rows = allTeams.map(t => {
+    const stats = t.seasonStats || t.stats || null
+    const coach = coachById[t.id] || null
+    const stars = t.stars || []
+    const topStar = [...stars].sort((a,b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier))[0] || null
+    return {
+      ...t,
+      stats,
+      coach,
+      stars,
+      star: topStar,
+    }
+  })
+
   const sorters = {
     overall:    (a,b) => ovr(getEffStats(b)) - ovr(getEffStats(a)),
     attack:     (a,b) => getEffStats(b).attack - getEffStats(a).attack,
@@ -1422,10 +1574,11 @@ function renderTeams() {
     setPieces:  (a,b) => getEffStats(b).setPieces - getEffStats(a).setPieces,
     alphabetical: (a,b) => a.name.localeCompare(b.name),
   }
-  const sorted = [...S.teams].sort(sorters[teamSort] || sorters.overall)
+  const sorted = [...rows].sort(sorters[teamSort] || sorters.overall)
   let html = `<div class="sort-row">Sort: ${['overall','attack','defense','stamina','mental','setPieces','alphabetical'].map(k =>
     `<button class="sort-btn ${teamSort===k?'active':''}" onclick="setTeamSort('${k}')">${k}</button>`).join('')}
     </div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">Showing all ${rows.length} clubs in the world.</div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th>#</th><th>Club</th><th>ATT</th><th>DEF</th><th>STA</th><th>MEN</th><th>SET</th><th>OVR</th><th>Star</th><th>Coach</th></tr></thead>
       <tbody>`
@@ -1709,7 +1862,7 @@ function renderHistoryTeams(teamStatsList) {
         ${c.label}${sortIndicator(historyTeamSort, c.id)}
       </th>`).join('')}
     </tr></thead><tbody>
-    ${sorted.slice(0, 30).map(t => `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
+    ${sorted.map(t => `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
       <td><strong>${flag(t.cc)} ${t.name}</strong></td>
       <td class="num" style="color:var(--gold)">${t.titles || '—'}</td>
       <td class="num">${t.finals || '—'}</td>
@@ -1754,7 +1907,7 @@ function renderHistoryPlayers(playerList) {
         ${c.label}${sortIndicator(historyPlayerSort, c.id)}
       </th>`).join('')}
     </tr></thead><tbody>
-    ${sorted.slice(0, 50).map(p => `<tr>
+    ${sorted.map(p => `<tr>
       <td><strong>${p.name}</strong></td>
       <td>${p.pos}</td>
       <td class="num">${p.participations || '—'}</td>
@@ -2250,6 +2403,44 @@ window.confirmRestartTournament = async function () {
       toast('Tournament restarted — all teams back to 0/0/0.')
     } catch (e) {
       toast('Restart failed: ' + e.message, 'error')
+    }
+  }
+  $('confirm-overlay').style.display = 'flex'
+}
+
+// Regenerate Power 1 (statBonus, goalDist, saveProb) and Power 2
+// (trait) for every player and every coach in the world. Identity,
+// position, tier, nationality, and career history are untouched.
+window.confirmRestartSkills = async function () {
+  closeSettings()
+  $('confirm-icon').textContent = '🔄'
+  $('confirm-title').textContent = 'Restart Player & Coach Skills?'
+  $('confirm-msg').textContent =
+    'Recompute every existing player and coach\'s Power 1 (stat bonuses) and Power 2 (special trait) ' +
+    'using the latest formulas. Names, nationalities, positions, tiers, teams, and career stats stay the same. ' +
+    'This is useful after the engine is re-tuned. Cannot be undone.'
+  $('confirm-ok').textContent = 'Restart Skills'
+  $('confirm-ok').className = 'btn btn-primary'
+  _confirmCb = async () => {
+    try {
+      let starCount = 0, coachCount = 0
+      // Walk every team's stars (S.allTeams covers all 81 leagues teams).
+      const teams = S.allTeams || []
+      for (const t of teams) {
+        if (Array.isArray(t.stars)) {
+          for (const s of t.stars) { regenStarSkills(s); starCount++ }
+        }
+        // Legacy single-star field — handle just in case.
+        if (t.star) { regenStarSkills(t.star); starCount++ }
+      }
+      // Coaches live in S.coaches (one per team).
+      for (const c of (S.coaches || [])) { regenCoachSkills(c); coachCount++ }
+      await autoSave()
+      // Re-render whatever's on screen so updated descriptions show up.
+      renderPlay()
+      toast(`Refreshed ${starCount} player skills and ${coachCount} coach skills.`)
+    } catch (e) {
+      toast('Skills refresh failed: ' + e.message, 'error')
     }
   }
   $('confirm-overlay').style.display = 'flex'

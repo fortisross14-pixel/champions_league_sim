@@ -302,6 +302,19 @@ table.data-table .num { text-align: center; }
   text-shadow: 0 0 4px rgba(255, 152, 0, 0.5);
 }
 
+/* Inline clickable team name (Groups, Bracket, results lists). The
+   underline-on-hover is the visual cue without making every list
+   row look like a link. */
+.team-name-link {
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+  transition: color .12s, border-color .12s;
+}
+.team-name-link:hover {
+  color: var(--blue2);
+  border-bottom-color: var(--blue2);
+}
+
 /* ── Star & Coach cards ───────────────────────────────────── */
 .star-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .star-card {

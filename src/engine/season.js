@@ -23,34 +23,49 @@ function rollTier() {
 // ── Stat bonuses by position × rarity ────────────────────────
 // Each position gets a stat profile that scales up with rarity.
 // Stats: attack, defense, stamina, mental, setPieces.
+// ── Player skill bonuses by position × rarity ────────────────
+// Power 1 — these directly add to the team's five ratings when
+// the player is on the side. Calibration follows the design doc:
+//   Legendary: 10-12 to 3-4 stats
+//   Epic:      6-8 to 2-3 stats, plus 5-6 to a couple more
+//   Rare:      similar magnitude to epic but NO trait (Power 2)
+//   Uncommon:  5-6 to one or two stats, 1-2 to a couple more
+//   Common:    2-3 to a couple of stats
+//
+// Forwards: heavy attack/mentality/stamina, some set pieces
+// (heading & free kicks). No defense — defenders defend.
+// Midfielders: spread across all five (the most balanced role).
+// Defenders: heavy defense/stamina/mentality, some set pieces
+// (corner-kick header threats). Light attack on top tiers only.
+// GK: defense + mentality only (a goalkeeper doesn't add attack).
 const STAT_BONUSES = {
   FWD: {
-    common:    { attack:2 },
-    uncommon:  { attack:4, setPieces:2 },
-    rare:      { attack:6, setPieces:3, stamina:2 },
-    epic:      { attack:8, setPieces:5, stamina:4 },
-    legendary: { attack:10, setPieces:7, stamina:5, mental:5 },
+    common:    { attack:3, stamina:2 },
+    uncommon:  { attack:5, stamina:5, mental:2, setPieces:2 },
+    rare:      { attack:7, stamina:6, mental:6, setPieces:5 },
+    epic:      { attack:8, stamina:7, mental:7, setPieces:6 },
+    legendary: { attack:11, stamina:10, mental:11, setPieces:9 },
   },
   MID: {
-    common:    { mental:2 },
-    uncommon:  { mental:3, attack:2 },
-    rare:      { mental:5, attack:4, defense:2 },
-    epic:      { mental:7, attack:6, defense:4, stamina:3 },
-    legendary: { mental:9, attack:8, defense:6, stamina:5, setPieces:5 },
+    common:    { mental:2, attack:2, defense:2 },
+    uncommon:  { mental:5, attack:5, defense:3, stamina:2 },
+    rare:      { mental:7, attack:6, defense:5, stamina:5, setPieces:4 },
+    epic:      { mental:8, attack:7, defense:6, stamina:6, setPieces:5 },
+    legendary: { mental:11, attack:10, defense:9, stamina:9, setPieces:8 },
   },
   DEF: {
-    common:    { defense:2 },
-    uncommon:  { defense:4, stamina:2 },
-    rare:      { defense:6, stamina:3, mental:2 },
-    epic:      { defense:8, stamina:5, mental:3, setPieces:2 },
-    legendary: { defense:10, stamina:7, mental:5, setPieces:4 },
+    common:    { defense:3, stamina:2 },
+    uncommon:  { defense:5, stamina:5, mental:2, setPieces:2 },
+    rare:      { defense:7, stamina:6, mental:6, setPieces:5, attack:2 },
+    epic:      { defense:8, stamina:7, mental:7, setPieces:6, attack:3 },
+    legendary: { defense:11, stamina:10, mental:11, setPieces:8, attack:4 },
   },
   GK: {
-    common:    { defense:2 },
-    uncommon:  { defense:3, mental:2 },
-    rare:      { defense:5, mental:3 },
-    epic:      { defense:7, mental:5, stamina:2 },
-    legendary: { defense:9, mental:7, stamina:4 },
+    common:    { defense:3 },
+    uncommon:  { defense:5, mental:2 },
+    rare:      { defense:7, mental:5 },
+    epic:      { defense:8, mental:7 },
+    legendary: { defense:11, mental:11 },
   },
 }
 
@@ -95,6 +110,83 @@ export const SAVE_PROB = {
   DEF: { common:0.08, uncommon:0.14, rare:0.22, epic:0.35, legendary:0.50 },
 }
 
+// ── Star Traits (Power 2) ────────────────────────────────────
+// Only legendary and epic players get a trait. They split into two
+// flavours: "stat-side" boost a match stat (shots, corners, possession)
+// directly; "conversion-side" change how stats translate into goals.
+// The match engine reads `trait.id` and applies the effect.
+//
+// Each trait declares which positions it suits via `positions`.
+export const STAR_TRAITS = [
+  // ── FWD: stat-side ──────────────────────────────────────────
+  { id:'goal_mentality', name:'Goal Mentality',
+    description:'Adds extra shots to the team in the first 60 minutes (+5/6 Leg, +3/4 Epic).',
+    positions:['FWD'], side:'stat' },
+  { id:'look_for_corner', name:'Look for the Corner',
+    description:'Hunts corners — adds team corners in the first 60 minutes (+5/6 Leg, +3/4 Epic).',
+    positions:['FWD','MID'], side:'stat' },
+  // ── FWD: conversion-side ────────────────────────────────────
+  { id:'precise_shooting', name:'Precise Shooting',
+    description:'Team shot conversion is 20-50% Leg / 10-40% Epic instead of the 0-20% baseline.',
+    positions:['FWD'], side:'conv' },
+  { id:'penalty_box_predator', name:'Penalty Box Predator',
+    description:'If the team scores, the first goal of the match is theirs.',
+    positions:['FWD'], side:'conv' },
+
+  // ── MID: stat-side ──────────────────────────────────────────
+  { id:'control_tempo', name:'Control the Tempo',
+    description:'Anchors midfield — team possession +12% Leg / +6% Epic in the first 60 minutes.',
+    positions:['MID'], side:'stat' },
+  { id:'engine', name:'Engine of the Team',
+    description:'Tireless runner — team stamina effectively never drops in the last 30 minutes.',
+    positions:['MID'], side:'stat' },
+  // ── MID: conversion-side ────────────────────────────────────
+  { id:'useful_possession', name:'Useful Possession',
+    description:'Possession converts harder — bonus goals from possession are doubled.',
+    positions:['MID'], side:'conv' },
+  { id:'dead_ball_specialist', name:'Dead-Ball Specialist',
+    description:'Free kicks & corners convert at 2× the team baseline (Juninho-style).',
+    positions:['MID','FWD','DEF'], side:'conv' },
+
+  // ── DEF: stat-side ──────────────────────────────────────────
+  { id:'kick_it_far', name:'Kick It Far',
+    description:'Clears danger — opponent shots in the first 60 minutes are reduced (-5/6 Leg, -3/4 Epic).',
+    positions:['DEF'], side:'stat' },
+  { id:'aerial_wall', name:'Aerial Wall',
+    description:'Wins everything in the air — opponent corners in the first 60 minutes are reduced (-4/5 Leg, -2/3 Epic).',
+    positions:['DEF','GK'], side:'stat' },
+  // ── DEF: conversion-side ────────────────────────────────────
+  { id:'nullify', name:'Nullifier',
+    description:'Marks the opponent\'s best player out of the game — their stat bonuses are ignored this match.',
+    positions:['DEF'], side:'conv', tierLock:'legendary' },
+  { id:'last_ditch', name:'Last-Ditch Block',
+    description:'Caps opponent shot conversion at 10% Leg / 15% Epic.',
+    positions:['DEF'], side:'conv' },
+
+  // ── GK: conversion-side ─────────────────────────────────────
+  { id:'wall_keeper', name:'The Wall',
+    description:'Opponent can never score more than 1 goal in this match.',
+    positions:['GK'], side:'conv', tierLock:'legendary' },
+  { id:'penalty_specialist', name:'Penalty Specialist',
+    description:'+1 mental in close games and tilts penalty shootouts in the team\'s favour.',
+    positions:['GK'], side:'conv' },
+  { id:'catlike_reflexes', name:'Catlike Reflexes',
+    description:'Each shot the opponent takes has a 6-10% chance of being saved spectacularly.',
+    positions:['GK'], side:'conv' },
+]
+
+// Pick a trait suitable for this position & tier.
+function pickStarTrait(pos, tier) {
+  if (tier !== 'legendary' && tier !== 'epic') return null
+  const eligible = STAR_TRAITS.filter(t => {
+    if (!t.positions.includes(pos)) return false
+    if (t.tierLock && t.tierLock !== tier) return false
+    return true
+  })
+  if (!eligible.length) return null
+  return pick(eligible)
+}
+
 // Roll a goal count from a distribution.
 export function rollGoalsFromDist(dist) {
   const r = Math.random()
@@ -104,6 +196,32 @@ export function rollGoalsFromDist(dist) {
     if (r < acc) return i
   }
   return 0
+}
+
+// ── Regenerate skills for an existing star ──────────────────
+// Keeps identity (id, name, nationality, position, tier, team,
+// age/lifespan, career stats); only refreshes Power 1 (statBonus,
+// goalDist, saveProb) and Power 2 (trait) per the latest catalog.
+export function regenStarSkills(star) {
+  if (!star?.pos || !star?.tier) return
+  star.statBonus = STAT_BONUSES[star.pos]?.[star.tier] || {}
+  star.goalDist  = GOAL_DIST[star.pos]?.[star.tier]   || [1,0,0,0,0]
+  star.saveProb  = SAVE_PROB[star.pos]?.[star.tier]   || 0
+  star.trait     = pickStarTrait(star.pos, star.tier)
+}
+
+// ── Regenerate skills for an existing coach ─────────────────
+// Keeps identity & career history; refreshes statBonus and trait.
+export function regenCoachSkills(coach) {
+  if (!coach?.tier) return
+  coach.statBonus = COACH_BONUSES[coach.tier] || {}
+  // Only legendary/epic coaches get a trait.
+  if (coach.tier === 'legendary' || coach.tier === 'epic') {
+    const eligible = COACH_TRAITS.filter(t => t.tier === coach.tier)
+    coach.trait = eligible.length ? pick(eligible) : null
+  } else {
+    coach.trait = null
+  }
 }
 
 // Build a human-readable description of a star's skills.
@@ -122,6 +240,11 @@ export function describeStarSkills(star) {
   if (['GK','DEF'].includes(star.pos)) {
     const sp = SAVE_PROB[star.pos]?.[star.tier] || 0
     lines.push(`${Math.round(sp*100)}% chance to deny each opponent goal`)
+  }
+
+  // Power 2 trait — only legendary/epic players have one.
+  if (star.trait) {
+    lines.push(`✦ ${star.trait.name}: ${star.trait.description}`)
   }
   return lines
 }
@@ -161,7 +284,14 @@ export function runStatsUpdate() {
     }
 
     // For each of the 5 stats, roll a new value.
+    // EXCEPT mental — that's intentionally a fixed 60 baseline for
+    // every team every season. The only variance in mental comes
+    // from (a) star/coach statBonus.mental, applied at match time,
+    // and (b) the tournament mentality delta that builds with wins
+    // and erodes with losses. This makes "team confidence" purely
+    // an in-tournament narrative arc, not a stat-rollover artifact.
     const rollStat = key => {
+      if (key === 'mental') return 60
       const target = clamp(Math.round(base + gaussRand(7)), 40, 110)
       if (!prev) return target  // first season — no cap, just take the roll
       const previousVal = prev[key] || base
@@ -228,6 +358,7 @@ export function genStar(team) {
   const statBonus = STAT_BONUSES[pos]?.[tier] || {}
   const goalDist  = GOAL_DIST[pos]?.[tier] || [1,0,0,0,0]
   const saveProb  = SAVE_PROB[pos]?.[tier] || 0
+  const trait     = pickStarTrait(pos, tier)
   return {
     id: `s_${team.id}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
     name: genNameForCC(nationality),
@@ -241,19 +372,29 @@ export function genStar(team) {
     statBonus,
     goalDist,
     saveProb,
+    trait,
   }
 }
 
 // ── Coach skills by rarity ────────────────────────────────────
 // Common / uncommon / rare coaches just add stats. Epic and
-// legendary coaches get a *named trait* with a rich match-time
-// effect (resolved in match.js).
+// legendary coaches additionally get a *named trait* (Power 2)
+// with a rich match-time effect (resolved in match.js).
+//
+// Coaches affect the whole side; their per-stat bonuses are
+// smaller than a single legendary player's, but spread across
+// every stat. Tuning roughly:
+//   Legendary: ~7-9 to most stats (sums to ~38 across 5)
+//   Epic:      ~5-7
+//   Rare:      ~3-5
+//   Uncommon:  ~2-3
+//   Common:    ~1-2
 const COACH_BONUSES = {
-  legendary: { attack:8, defense:8, stamina:6, mental:8, setPieces:6 },
-  epic:      { attack:6, defense:6, stamina:4, mental:6, setPieces:4 },
-  rare:      { attack:4, defense:4, stamina:3, mental:3, setPieces:2 },
-  uncommon:  { attack:3, defense:2, stamina:1, mental:2, setPieces:1 },
-  common:    { attack:2, defense:2, stamina:1, mental:1, setPieces:0 },
+  legendary: { attack:8, defense:8, stamina:7, mental:9, setPieces:7 },
+  epic:      { attack:6, defense:6, stamina:5, mental:7, setPieces:5 },
+  rare:      { attack:4, defense:4, stamina:3, mental:5, setPieces:3 },
+  uncommon:  { attack:3, defense:2, stamina:2, mental:3, setPieces:1 },
+  common:    { attack:2, defense:2, stamina:1, mental:2, setPieces:1 },
 }
 
 // Legendary / epic trait pool. Each trait has:
@@ -262,30 +403,29 @@ const COACH_BONUSES = {
 //   description — human-readable effect
 //   tier        — 'legendary' | 'epic' (for selection)
 // Effects fire inside simMatch() based on the id.
+//
+// The new engine reads these in two phases: stat-side traits modify
+// shots/possession/corners/stamina; conversion-side traits modify
+// how those stats translate to goals.
 export const COACH_TRAITS = [
-  // ── Legendary ────────────────────────────────────────────────
+  // ── Legendary — stat-side ───────────────────────────────────
+  {
+    id: 'tiki_taka',
+    name: 'Tiki-Taka Master',
+    description: 'Team possession +12% in the first 60 minutes.',
+    tier: 'legendary',
+  },
+  {
+    id: 'gegenpress',
+    name: 'Gegenpress',
+    description: 'Team shots +5 and opponent shots -3 in the first 60 minutes; team stamina drains slightly faster.',
+    tier: 'legendary',
+  },
+  // ── Legendary — conversion-side ─────────────────────────────
   {
     id: 'catenaccio',
     name: 'Catenaccio Master',
     description: 'Team never concedes more than 1 goal per match.',
-    tier: 'legendary',
-  },
-  {
-    id: 'jogo_bonito',
-    name: 'Jogo Bonito',
-    description: 'Attacking stars on this team get +1 to their goal-distribution roll (max 5).',
-    tier: 'legendary',
-  },
-  {
-    id: 'revolutionary',
-    name: 'Revolutionary Tactics',
-    description: 'All five team stats get an extra +5 boost on top of normal coach stats.',
-    tier: 'legendary',
-  },
-  {
-    id: 'tiki_taka',
-    name: 'Tiki-Taka',
-    description: 'If team possession ≥ 60%, +1 free goal at the end of the match.',
     tier: 'legendary',
   },
   {
@@ -294,29 +434,43 @@ export const COACH_TRAITS = [
     description: 'Opposing star players have their goal contribution capped at 1.',
     tier: 'legendary',
   },
-  // ── Epic ─────────────────────────────────────────────────────
   {
-    id: 'set_piece_specialist',
-    name: 'Set-Piece Specialist',
-    description: 'If team set pieces ≥ 80, 60% chance of an extra goal from a free kick or corner.',
-    tier: 'epic',
+    id: 'counter_attack',
+    name: 'Counter-Attack Genius',
+    description: 'When team possession is below 50%, +2 bonus goals from devastating counter-attacks.',
+    tier: 'legendary',
   },
+  {
+    id: 'big_match',
+    name: 'Big-Match Player',
+    description: 'In knockout matches, all five team stats receive an extra +5 boost.',
+    tier: 'legendary',
+  },
+
+  // ── Epic — stat-side ────────────────────────────────────────
   {
     id: 'high_press',
     name: 'High Press',
-    description: 'Team gains +6 attack and +6 stamina, but also concedes +0.3 expected goals.',
+    description: 'Team shots +3 and opponent shots -2 in the first 60 minutes; opponent gets +1 shot in the last 30.',
+    tier: 'epic',
+  },
+  {
+    id: 'set_piece_specialist',
+    name: 'Set-Piece Specialist',
+    description: 'Team corners +3 in the first 60 minutes and corner→goal conversion is doubled.',
     tier: 'epic',
   },
   {
     id: 'park_the_bus',
     name: 'Park the Bus',
-    description: '50% chance to deny one opposing goal each match.',
+    description: 'Opponent shots -4 in the first 60 minutes; team possession capped at 45%.',
     tier: 'epic',
   },
+  // ── Epic — conversion-side ──────────────────────────────────
   {
     id: 'comeback_king',
     name: 'Comeback King',
-    description: 'If team is losing at minute 75, 50% chance of one equaliser goal.',
+    description: 'In the last 30 minutes, if the team is losing, 50% chance of one equaliser goal.',
     tier: 'epic',
   },
   {
@@ -326,9 +480,9 @@ export const COACH_TRAITS = [
     tier: 'epic',
   },
   {
-    id: 'gegenpress',
-    name: 'Gegenpress',
-    description: 'In knockout matches, +0.4 expected goals and +5 mental.',
+    id: 'youth_whisperer',
+    name: 'Youth Whisperer',
+    description: 'All non-legendary players on this team gain +2 to their statBonus values.',
     tier: 'epic',
   },
 ]
@@ -590,22 +744,51 @@ export function runQualification() {
 
 // ── Group draw (8 groups of 4) ────────────────────────────────
 export function drawGroups() {
-  const sorted = [...S.teams].sort((a,b) => b.rating - a.rating)
-  const pot1 = sorted.slice(0, 8)
-  const rest = shuffle(sorted.slice(8))
-
-  S.groups = Array.from({length: 8}, (_, i) => ({
+  // True random group draw — the only hard constraint is that two
+  // teams from the same country can't be in the same group. We use
+  // backtracking because a greedy pass occasionally paints itself
+  // into a corner (the last few teams' country is over-represented
+  // in every remaining group with an open slot).
+  //
+  // Earlier versions seeded eight pots by team rating, which made
+  // the top eight rated clubs always land in groups A–H in the
+  // same order. Now every team is shuffled into the same pool and
+  // dealt out randomly.
+  const teams = shuffle([...S.teams])
+  const groups = Array.from({length: 8}, (_, i) => ({
     id: String.fromCharCode(65 + i),
-    teams: [pot1[i]],
+    teams: [],
   }))
 
-  // Fill groups — try to keep at most one team per country per group.
-  for (const team of rest) {
-    const eligible = S.groups.filter(g => g.teams.length < 4 && !g.teams.some(t => t.cc === team.cc))
-    const fallback = S.groups.filter(g => g.teams.length < 4)
-    const target = eligible.length ? pick(eligible) : pick(fallback)
-    if (target) target.teams.push(team)
+  // Assign team i into a group; return true if the whole roster
+  // could be placed without violating the same-country rule.
+  const place = (i) => {
+    if (i >= teams.length) return true
+    const team = teams[i]
+    // Try groups in random order so we don't bias toward A.
+    const order = shuffle(groups.map((_, gi) => gi))
+    for (const gi of order) {
+      const g = groups[gi]
+      if (g.teams.length >= 4) continue
+      if (g.teams.some(t => t.cc === team.cc)) continue
+      g.teams.push(team)
+      if (place(i + 1)) return true
+      g.teams.pop()
+    }
+    return false
   }
+
+  if (!place(0)) {
+    // Pathological case (e.g. 5+ teams from one country across the 32).
+    // Fall back to ignoring the country rule rather than crashing.
+    groups.forEach(g => { g.teams = [] })
+    teams.forEach(team => {
+      const target = pick(groups.filter(g => g.teams.length < 4))
+      if (target) target.teams.push(team)
+    })
+  }
+
+  S.groups = groups
 
   S.groupMatches = []
   S.groups.forEach((grp, gi) => {
@@ -726,9 +909,112 @@ export function buildKnockout() {
   })
   const winners = S.groups.map(g => [...g.teams].sort(cmp)[0])
   const runners = S.groups.map(g => [...g.teams].sort(cmp)[1])
-  const r16 = [[0,1],[1,0],[2,3],[3,2],[4,5],[5,4],[6,7],[7,6]].map(([wi,ri]) => ({
-    t1: winners[wi], t2: runners[ri], played:false, result:null,
-  }))
+
+  // ── True R16 draw + bracket placement ────────────────────────
+  //
+  // Two constraints:
+  //   1. A R16 match pairs a group winner with a runner-up from a
+  //      DIFFERENT group.
+  //   2. Once placed in the bracket, two teams from the same group
+  //      must not be able to meet again before the FINAL — i.e.
+  //      they have to land in opposite halves of the bracket
+  //      (slots 0–3 vs slots 4–7).
+  //
+  // We solve both with backtracking. We assign group winner i (in
+  // a random order) to a bracket slot, then pair them with a random
+  // eligible runner-up. "Eligible" = different group AND, if the
+  // other team from runner's group is already placed, must be in
+  // the opposite half.
+  //
+  // Bracket slots 0–7 map to:
+  //   slot 0,1 → QF top-upper       │  half A
+  //   slot 2,3 → QF top-lower       │
+  //   slot 4,5 → QF bottom-upper    │  half B
+  //   slot 6,7 → QF bottom-lower    │
+  // SF crosses QF top vs QF top, QF bottom vs QF bottom.
+  // Final is half-A winner vs half-B winner.
+  const halfOf = slot => slot < 4 ? 0 : 1
+  const NUM_SLOTS = 8
+
+  // Picks a random R16 layout. Returns array of {slot, winner, runner}
+  // or null if the constraints can't be satisfied (extremely rare).
+  function drawR16() {
+    const slotOrder = shuffle([0,1,2,3,4,5,6,7])
+    const winnerOrder = shuffle(winners.map((_, i) => i))
+    const placement = new Array(NUM_SLOTS).fill(null)
+    // Per-group: which halves are already in use? Both teams in a
+    // group must end up in different halves.
+    const groupHalves = winners.map(() => new Set())
+
+    // Step 1 — place each winner into a slot. Group winner i goes
+    // into a randomly chosen slot. The winner's group then occupies
+    // that slot's half.
+    function placeWinner(idx) {
+      if (idx === winnerOrder.length) return true
+      const gi = winnerOrder[idx]
+      for (const s of slotOrder) {
+        if (placement[s]) continue
+        placement[s] = { slot:s, winnerGroup: gi, runnerGroup: -1 }
+        groupHalves[gi].add(halfOf(s))
+        if (placeWinner(idx + 1)) return true
+        placement[s] = null
+        groupHalves[gi].delete(halfOf(s))
+      }
+      return false
+    }
+    if (!placeWinner(0)) return null
+
+    // Step 2 — pair each slot's winner with a random eligible
+    // runner-up. "Eligible" = different group and (if that group's
+    // winner is already in the same half) only opposite half.
+    const usedRunners = new Set()
+    function pairRunner(idx) {
+      if (idx === NUM_SLOTS) return true
+      const slotInfo = placement[idx]
+      const slotHalf = halfOf(slotInfo.slot)
+      const candidateOrder = shuffle(winners.map((_, gi) => gi))
+      for (const rgi of candidateOrder) {
+        if (usedRunners.has(rgi)) continue
+        if (rgi === slotInfo.winnerGroup) continue
+        // Same-group constraint: the other team from rgi (the
+        // winner) must not already be in this same half.
+        if (groupHalves[rgi].has(slotHalf)) continue
+        slotInfo.runnerGroup = rgi
+        usedRunners.add(rgi)
+        groupHalves[rgi].add(slotHalf)
+        if (pairRunner(idx + 1)) return true
+        usedRunners.delete(rgi)
+        groupHalves[rgi].delete(slotHalf)
+        slotInfo.runnerGroup = -1
+      }
+      return false
+    }
+    if (!pairRunner(0)) return null
+    return placement
+  }
+
+  // Try a few times — any single attempt is overwhelmingly likely
+  // to succeed, but the placement is randomized, so the occasional
+  // dead end is normal. The constraints are easily satisfiable in
+  // theory (8 winners, 8 runners, 4 slots per half).
+  let layout = null
+  for (let i = 0; i < 30 && !layout; i++) layout = drawR16()
+  if (!layout) {
+    // Last-resort fallback: deterministic pairing (legacy behaviour).
+    // Should essentially never run.
+    const pairs = [[0,1],[1,0],[2,3],[3,2],[4,5],[5,4],[6,7],[7,6]]
+    layout = pairs.map(([wi, ri], slot) => ({ slot, winnerGroup: wi, runnerGroup: ri }))
+  }
+
+  const r16 = new Array(NUM_SLOTS)
+  layout.forEach(p => {
+    r16[p.slot] = {
+      t1: winners[p.winnerGroup],
+      t2: runners[p.runnerGroup],
+      played: false, result: null,
+    }
+  })
+
   S.knockoutRounds = [{ name:'Round of 16', matches:r16 }]
 }
 
@@ -871,6 +1157,81 @@ function finalizeSeasonStats() {
     else                  { a.d++; b.d++ }
   })
 
+  // ── All-time coach stats accumulator ────────────────────────
+  // Mirrors S.teamStats but keyed by coach.id, so coach detail
+  // screens can show career totals across every club they've led.
+  // A coach gets credit for whatever happened to whichever team
+  // they led this season. Local titles are awarded by walking
+  // S.localLeagueResults (each league's #1 team's coach).
+  if (!S.coachStats) S.coachStats = {}
+  const ensureCoachStat = (c, teamName, teamCC) => {
+    if (!c?.id) return null
+    if (!S.coachStats[c.id]) {
+      S.coachStats[c.id] = {
+        id: c.id, name: c.name, tier: c.tier, nationality: c.nationality,
+        // Final-snapshot info kept fresh so retired coaches still render.
+        lastTeamName: teamName, lastTeamCC: teamCC,
+        firstSeason: S.season || 1,
+        // Career totals (CL only — local-league games aren't simulated).
+        seasons: 0,
+        played: 0, wins: 0, draws: 0, losses: 0,
+        goalsFor: 0, goalsAgainst: 0,
+        titles: 0, finals: 0, semiFinals: 0, quarterFinals: 0, roundOf16: 0,
+        groupExits: 0, dnqs: 0,
+        localTitles: 0,
+      }
+    }
+    const cs = S.coachStats[c.id]
+    cs.lastTeamName = teamName
+    cs.lastTeamCC = teamCC
+    cs.tier = c.tier   // tier never changes, but cheap to refresh
+    return cs
+  }
+
+  // 1) Credit CL coaches (qualified teams) with games + round reached.
+  S.teams.forEach(t => {
+    if (!t.coach?.id) return
+    const cs = ensureCoachStat(t.coach, t.name, t.cc)
+    if (!cs) return
+    cs.seasons++
+    const fs = fullStats[t.id] || { w:0, d:0, l:0, gf:0, ga:0 }
+    cs.played += fs.w + fs.d + fs.l
+    cs.wins   += fs.w
+    cs.draws  += fs.d
+    cs.losses += fs.l
+    cs.goalsFor      += fs.gf
+    cs.goalsAgainst  += fs.ga
+    const reached = S.roundReached[t.id] || 'Group'
+    if      (reached === 'Winner')         cs.titles++
+    else if (reached === 'Final')          cs.finals++
+    else if (reached === 'Semi-finals')    cs.semiFinals++
+    else if (reached === 'Quarter-finals') cs.quarterFinals++
+    else if (reached === 'Round of 16')    cs.roundOf16++
+    else                                   cs.groupExits++
+  })
+
+  // 2) Credit DNQ coaches with a "season managed" + DNQ marker.
+  //    No CL games to add — they sat out — but they did manage a club.
+  const qualifiedIdSet = new Set(S.teams.map(t => t.id))
+  ;(S.allTeams || []).forEach(t => {
+    if (qualifiedIdSet.has(t.id)) return
+    const coach = (S.coaches || []).find(c => c.teamId === t.id)
+    if (!coach?.id) return
+    const cs = ensureCoachStat(coach, t.name, t.cc)
+    if (!cs) return
+    cs.seasons++
+    cs.dnqs++
+  })
+
+  // 3) Local titles: each league's #1 team's coach gets +1.
+  Object.values(S.localLeagueResults || {}).forEach(r => {
+    const champTeamId = r.qualified?.[0]?.id
+    if (!champTeamId) return
+    const champCoach = (S.coaches || []).find(c => c.teamId === champTeamId)
+    if (!champCoach?.id) return
+    if (S.coachStats[champCoach.id]) S.coachStats[champCoach.id].localTitles++
+  })
+
   const teamSeasons = S.teams.map(t => {
     const stars = (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
     const fs = fullStats[t.id] || { w:0, d:0, l:0, gf:0, ga:0 }
@@ -886,7 +1247,7 @@ function finalizeSeasonStats() {
       losses: fs.l,
       gf:     fs.gf,
       ga:     fs.ga,
-      coach:  t.coach ? { name: t.coach.name, tier: t.coach.tier } : null,
+      coach:  t.coach ? { id: t.coach.id, name: t.coach.name, tier: t.coach.tier } : null,
       stars:  stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
     }
   })
@@ -901,7 +1262,7 @@ function finalizeSeasonStats() {
       cc: t.cc,
       overall: t.currentOverall || 0,
       reached: 'DNQ',
-      coach: coach ? { name: coach.name, tier: coach.tier } : null,
+      coach: coach ? { id: coach.id, name: coach.name, tier: coach.tier } : null,
       stars: stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
     }
   })
