@@ -1,4 +1,6 @@
 // ── Game State Store ─────────────────────────────────────────
+import { ALL_TEAMS } from './data/teams.js'
+
 const DB_NAME = 'cls', DB_VER = 1, STORE = 'saves', AUTO_KEY = 'autosave'
 let _db = null
 
@@ -183,11 +185,39 @@ function rehydrateRefs() {
   }
 }
 
+// Pre-v6 saves used `team.base` instead of `team.money`. Detect
+// that here and refuse to load. The user starts a fresh world.
+function isLegacySave(data) {
+  if (!data?.allTeams?.length) return false
+  // Any team with `base` and no `money` → legacy.
+  const sample = data.allTeams[0]
+  return ('base' in sample) && !('money' in sample)
+}
+
+// Re-inject static team data (colors, etc.) from data/teams.js onto
+// the loaded save. Lets us add cosmetic fields without breaking
+// existing saves.
+function mergeStaticTeamData(data) {
+  if (!data?.allTeams) return
+  const byId = new Map(ALL_TEAMS.map(t => [t.id, t]))
+  data.allTeams.forEach(t => {
+    const src = byId.get(t.id)
+    if (!src) return
+    if (!t.colors && src.colors) t.colors = src.colors
+  })
+}
+
 export async function loadGame() {
   try {
     const d = await dbLoad(AUTO_KEY)
     if (!d) return false
+    if (isLegacySave(d)) {
+      console.warn('[store] Detected legacy save (pre-v6 economy). Wiping it — please start a new game.')
+      await dbDelete(AUTO_KEY)
+      return false
+    }
     resetState()
+    mergeStaticTeamData(d)
     Object.assign(S, d)
     rehydrateRefs()
     return true
@@ -209,7 +239,11 @@ export async function saveSlot(name) {
 export async function loadSlot(key) {
   const d = await dbLoad(key)
   if (!d) throw new Error('Save not found')
+  if (isLegacySave(d)) {
+    throw new Error('This save predates the v6 economy update. Please start a new game.')
+  }
   resetState()
+  mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
   await autoSave()
@@ -267,6 +301,7 @@ export async function restartSeason() {
   const d = await dbLoad(PRE_SEASON_KEY)
   if (!d) throw new Error('No pre-season snapshot found')
   resetState()
+  mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
   await dbDelete(PRE_TOURNAMENT_KEY)
@@ -279,6 +314,7 @@ export async function restartTournament() {
   const d = await dbLoad(PRE_TOURNAMENT_KEY)
   if (!d) throw new Error('No pre-tournament snapshot found')
   resetState()
+  mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
   await autoSave()    // make autosave match the restored state
@@ -308,6 +344,7 @@ export function importSave(file) {
         if (typeof d !== 'object' || d === null) throw new Error('Not a JSON object')
         if (typeof d.season !== 'number') throw new Error('Missing "season" — not a save file?')
         if (!Array.isArray(d.history) && d.history !== undefined) throw new Error('Corrupt history')
+        if (isLegacySave(d)) throw new Error('This save predates the v6 economy update. Please start a new game.')
         // Older saves don't have a saveVersion. We still accept them
         // but warn so the user knows things might look slightly off.
         if (d.saveVersion && d.saveVersion > SAVE_VERSION) {
@@ -316,7 +353,8 @@ export function importSave(file) {
         // Wipe stale state before applying the loaded data so
         // nothing from the running session can leak through.
         resetState()
-        Object.assign(S, d)
+        mergeStaticTeamData(d)
+    Object.assign(S, d)
         rehydrateRefs()
         autoSave().then(() => res(d)).catch(rej)
       } catch (err) { rej(err) }

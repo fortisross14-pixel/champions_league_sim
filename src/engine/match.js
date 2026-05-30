@@ -56,8 +56,16 @@ export function getEffStats(team, isKO = false, opts = {}) {
     if (!star?.statBonus) continue
     if (opts.nullifyStarId && star.id === opts.nullifyStarId) continue
     const fx = star.statBonus
-    const youthBoost = (youth && star.tier !== 'legendary') ? 2 : 0
-    const add = (k) => fx[k] ? (fx[k] + youthBoost) : 0
+    // Career multiplier: rookies 0.80, sophomores 0.90, prime 1.00,
+    // last year 0.90. Defaults to 1.0 if undefined (legacy save).
+    const mult = typeof star.careerMult === 'number' ? star.careerMult : 1.0
+    const youthBoost = (youth && star.tier !== 'legendary' && star.tier !== 'generational') ? 2 : 0
+    const add = (k) => {
+      if (!fx[k]) return 0
+      // Scale the base star bonus by careerMult, then add youthBoost
+      // flat (it's a coach effect, not a player-potential effect).
+      return Math.round(fx[k] * mult) + youthBoost
+    }
     s.attack    = clamp(s.attack    + add('attack'),    10, 130)
     s.defense   = clamp(s.defense   + add('defense'),   10, 130)
     s.stamina   = clamp(s.stamina   + add('stamina'),   10, 130)
@@ -67,6 +75,18 @@ export function getEffStats(team, isKO = false, opts = {}) {
 
   if (team.coach?.statBonus) {
     const fx = team.coach.statBonus
+    s.attack    = clamp(s.attack    + (fx.attack    || 0), 10, 130)
+    s.defense   = clamp(s.defense   + (fx.defense   || 0), 10, 130)
+    s.stamina   = clamp(s.stamina   + (fx.stamina   || 0), 10, 130)
+    s.mental    = clamp(s.mental    + (fx.mental    || 0), 10, 130)
+    s.setPieces = clamp(s.setPieces + (fx.setPieces || 0), 10, 130)
+  }
+
+  // GM / Director: their stat bonus applies to every match they're
+  // in tenure for. Tenure expiration is handled at end-of-season,
+  // so by match time the GM is always "active" if present.
+  if (team.gm?.statBonus) {
+    const fx = team.gm.statBonus
     s.attack    = clamp(s.attack    + (fx.attack    || 0), 10, 130)
     s.defense   = clamp(s.defense   + (fx.defense   || 0), 10, 130)
     s.stamina   = clamp(s.stamina   + (fx.stamina   || 0), 10, 130)

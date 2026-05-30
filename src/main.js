@@ -11,7 +11,7 @@ import {
   runMarket, runTransfers, startNewSeason, runLocalLeagues,
   runStatsUpdate,
   tierOf, tierLabel, tierColor,
-  describeStarSkills, describeCoachSkills,
+  describeStarSkills, describeCoachSkills, describeGMSkills,
   COACH_TRAITS,
   regenStarSkills, regenCoachSkills,
 } from './engine/season.js'
@@ -30,7 +30,23 @@ const FLAG = {
 }
 const flag = cc => `<span class="flag-emoji">${FLAG[cc] || '🏳️'}</span>`
 const tierBadge = t => `<span class="badge badge-${t}">${tierLabel(t)}</span>`
-const TIER_ORDER = ['legendary','epic','rare','uncommon','common']
+const TIER_ORDER = ['generational','legendary','epic','rare','uncommon','common']
+
+// Render the team's name as a colored pill (F1-style). Uses the
+// team's two-color scheme: a vertical accent bar on the left + a
+// tinted text block. The bar is the primary color; the text is the
+// secondary. Falls back to neutral grey if no colors.
+function teamPill(team, opts = {}) {
+  const colors = team?.colors || ['#444', '#fff']
+  const primary = colors[0]
+  const secondary = colors[1]
+  const flagHtml = opts.noFlag ? '' : `${flag(team.cc)} `
+  const extra = opts.extra || ''
+  return `<span class="team-pill" style="--team-primary:${primary};--team-secondary:${secondary}">
+    <span class="team-pill-bar"></span>
+    <span class="team-pill-name">${flagHtml}${team.name}${extra}</span>
+  </span>`
+}
 
 // Returns an orange star marker if the team has a legendary star or coach,
 // otherwise empty string. Used on the Groups and Bracket tabs to flag
@@ -39,13 +55,18 @@ const TIER_ORDER = ['legendary','epic','rare','uncommon','common']
 function legendStar(team) {
   if (!team) return ''
   const stars = team.stars && team.stars.length ? team.stars : (team.star ? [team.star] : [])
+  const genPlayer = stars.find(s => s?.tier === 'generational')
   const legendPlayer = stars.find(s => s?.tier === 'legendary')
   const legendCoach = team.coach?.tier === 'legendary' ? team.coach : null
-  if (!legendPlayer && !legendCoach) return ''
+  if (!genPlayer && !legendPlayer && !legendCoach) return ''
   const bits = []
+  if (genPlayer)    bits.push(`★ Generational: ${genPlayer.name}`)
   if (legendPlayer) bits.push(`Legendary player: ${legendPlayer.name}`)
   if (legendCoach)  bits.push(`Legendary coach: ${legendCoach.name}`)
-  return ` <span class="legend-star" title="${bits.join(' · ')}">★</span>`
+  // Pink star for generational, gold for legendary.
+  const cls = genPlayer ? 'gen-star' : 'legend-star'
+  const glyph = genPlayer ? '✦' : '★'
+  return ` <span class="${cls}" title="${bits.join(' · ')}">${glyph}</span>`
 }
 
 // Parse emoji in the given element using Twemoji, which swaps emoji
@@ -788,7 +809,7 @@ window.setStatsTableSort = function(col) {
 
 function renderStatsTable() {
   if (!S.allTeams?.length) return '<div class="empty">No teams loaded yet.</div>'
-  const tierWeight = { legendary:8, epic:5, rare:3, uncommon:1, common:0 }
+  const tierWeight = { generational:12, legendary:8, epic:5, rare:3, uncommon:1, common:0 }
 
   // Build the row data once.
   const rows = S.allTeams.map(t => {
@@ -801,11 +822,16 @@ function renderStatsTable() {
     const starBoost = stars.reduce((s,x) => s + (tierWeight[x.tier]||0), 0)
     const coach = S.coaches?.find(c => c.teamId === t.id)
     const coachBoost = tierWeight[coach?.tier] || 0
+    const moneyBase = t.money || 6
+    const gmBonus = t.gm?.moneyBonus || 0
+    const moneyEff = Math.min(14, moneyBase + gmBonus)
     return {
       id: t.id,
       name: t.name,
       cc: t.cc,
-      base: t.base || 0,
+      money: moneyBase,
+      moneyEff,
+      moneyCenter: 41 + 4 * moneyEff,   // for drift coloring
       psOv: t.lastSeasonOverall || 0,
       csOv: csOv,
       csOvWith: csOv + starBoost + coachBoost,
@@ -830,7 +856,7 @@ function renderStatsTable() {
 
   const cols = [
     { id: 'name',      label: 'Team',     isText: true },
-    { id: 'base',      label: 'Base',     title: 'Permanent base rating' },
+    { id: 'money',     label: '$',        title: 'Annual income (base + GM bonus shown next to it)' },
     { id: 'psOv',      label: 'PS-Ov',    title: 'Prior season overall (0 if first season)' },
     { id: 'csOv',      label: 'CS-Ov',    title: 'Current season overall (avg of 5 stats)' },
     { id: 'csOvWith',  label: 'CS-Ov+',   title: 'Current season overall including stars + coach bonus' },
@@ -851,18 +877,21 @@ function renderStatsTable() {
       </th>`).join('')}
     </tr></thead><tbody>
     ${rows.map((t, i) => {
-      // Compare CS-Ov to base to show drift coloring.
-      const drift = t.csOv - t.base
+      // Compare CS-Ov to money-derived center to show drift coloring.
+      const drift = t.csOv - t.moneyCenter
       const driftCol = drift > 2 ? 'var(--green)' : drift < -2 ? 'var(--red)' : 'var(--txt2)'
       const psOvCell = t.psOv ? t.psOv : '<span style="color:var(--txt3)">—</span>'
       const psDelta = t.psOv ? (t.csOv - t.psOv) : 0
       const psDeltaStr = t.psOv
         ? ` <span style="color:${psDelta>0?'var(--green)':psDelta<0?'var(--red)':'var(--txt3)'};font-size:10px">${psDelta>0?'+':''}${psDelta}</span>`
         : ''
+      const gmStr = (t.moneyEff > t.money)
+        ? ` <span style="color:var(--green);font-size:10px">+${t.moneyEff - t.money}</span>`
+        : ''
       return `<tr>
         <td class="num" style="color:var(--txt3)">${i + 1}</td>
         <td><strong>${flag(t.cc)} ${t.name}</strong></td>
-        <td class="num" style="color:var(--silver);font-weight:700">${t.base}</td>
+        <td class="num" style="color:var(--gold);font-weight:700">${t.money}${gmStr}</td>
         <td class="num">${psOvCell}</td>
         <td class="num" style="color:${driftCol};font-weight:700">${t.csOv || '—'}${psDeltaStr}</td>
         <td class="num" style="color:var(--gold);font-weight:700">${t.csOvWith || '—'}</td>
@@ -882,15 +911,90 @@ function renderMarketScreen() {
   const moves = S.lastMarket || []
   const seasonNum = S.season || 1
   let html = `
-    <div class="sec">TRANSFER MARKET — SEASON ${seasonNum}</div>
+    <div class="sec">OFFSEASON — SEASON ${seasonNum}</div>
     <div style="color:var(--txt2);font-size:12px;margin-bottom:14px">
-      Retirements first, then transfers between clubs, then any squad overflow,
-      then coaching changes. Click "Run Local Leagues" above when you're ready.
+      Retirements, contract resolutions, income updates, rookie spawns,
+      free-agent signings, salary deductions. Click "Run Local Leagues"
+      above when you're ready to continue.
     </div>`
 
   if (!moves.length) {
     html += '<div class="empty">Quiet window — nothing to report.</div>'
     return html
+  }
+
+  // Quick economy summary banner.
+  const teamMoves = moves.filter(m => m.kind === 'team')
+  if (teamMoves.length) {
+    const incomeTotal = teamMoves.filter(m => m.phase === 'income').reduce((s,m) => s + m.amount, 0)
+    const salaryTotal = teamMoves.filter(m => m.phase === 'salary').reduce((s,m) => s + m.amount, 0)
+    const penaltyTotal = teamMoves.filter(m => m.phase === 'champion_penalty').reduce((s,m) => s + m.amount, 0)
+    // Transfer flow.
+    const transfers = moves.filter(m => m.phase === 'transfer')
+    const transferCount = transfers.length
+    const feesPaid = transfers.reduce((s,m) => s + (m.signFee || 0), 0)
+    const salesPaid = transfers.reduce((s,m) => s + (m.saleValue || 0), 0)
+    // FA flow.
+    const faMoves = moves.filter(m => m.phase === 'fa_sign')
+    const faCount = faMoves.length
+    const faFees = faMoves.reduce((s,m) => s + (m.signFee || 0), 0)
+    // Splurges.
+    const splurges = moves.filter(m => m.phase === 'splurge')
+    const splurgeCount = splurges.length
+    const splurgeCost = splurges.reduce((s,m) => s + Math.abs(m.amount || 0), 0)
+    // Cash overflow (excess burned at end of offseason).
+    const overflows = moves.filter(m => m.phase === 'cash_overflow')
+    const overflowCount = overflows.length
+    const overflowTotal = overflows.reduce((s,m) => s + Math.abs(m.amount || 0), 0)
+    html += `<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+      <div style="padding:8px 12px;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Total income</div>
+        <div style="font-size:16px;color:var(--green);font-weight:700">+${incomeTotal}M</div>
+      </div>
+      <div style="padding:8px 12px;background:rgba(244,67,54,.1);border:1px solid rgba(244,67,54,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Total salaries</div>
+        <div style="font-size:16px;color:var(--red);font-weight:700">${salaryTotal}M</div>
+      </div>
+      ${transferCount ? `<div style="padding:8px 12px;background:rgba(33,150,243,.1);border:1px solid rgba(33,150,243,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Transfers (${transferCount})</div>
+        <div style="font-size:16px;color:var(--blue2);font-weight:700">−${feesPaid}M · sellers +${salesPaid}M</div>
+      </div>` : ''}
+      ${faCount ? `<div style="padding:8px 12px;background:rgba(240,192,64,.1);border:1px solid rgba(240,192,64,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">FA signings (${faCount})</div>
+        <div style="font-size:16px;color:var(--gold);font-weight:700">−${faFees}M</div>
+      </div>` : ''}
+      ${splurgeCount ? `<div style="padding:8px 12px;background:rgba(233,30,99,.1);border:1px solid rgba(233,30,99,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Splurges (${splurgeCount})</div>
+        <div style="font-size:16px;color:#ff4081;font-weight:700">−${splurgeCost}M · +5 stats</div>
+      </div>` : ''}
+      ${overflowCount ? `<div style="padding:8px 12px;background:rgba(120,120,140,.1);border:1px solid rgba(120,120,140,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Excess burned (${overflowCount})</div>
+        <div style="font-size:16px;color:var(--txt2);font-weight:700">−${overflowTotal}M owner takeout</div>
+      </div>` : ''}
+      ${penaltyTotal ? `<div style="padding:8px 12px;background:rgba(240,192,64,.1);border:1px solid rgba(240,192,64,.3);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Champion penalty</div>
+        <div style="font-size:16px;color:var(--gold);font-weight:700">${penaltyTotal}M</div>
+      </div>` : ''}
+    </div>`
+  }
+
+  // Splurge details (which teams spent for the +5 boost).
+  const splurgeMoves = moves.filter(m => m.phase === 'splurge')
+  if (splurgeMoves.length) {
+    html += `<div class="sec" style="color:#ff4081">SPLURGES — +5 to all stats next season (${splurgeMoves.length})</div>`
+    html += '<div class="market-list">'
+    splurgeMoves.forEach(m => {
+      html += `<div class="market-card">
+        <div class="row" style="gap:6px">
+          <span style="font-size:14px">🔥</span>
+          <span style="font-weight:600">${flag(m.teamCC)} ${m.teamName}</span>
+        </div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:4px">
+          Spent <strong style="color:#ff4081">$${Math.abs(m.amount)}M</strong> on training camp & facilities · cash now $${m.cashAfter}M
+        </div>
+      </div>`
+    })
+    html += '</div>'
   }
 
   html += renderMarketMoveList(moves)
@@ -901,21 +1005,31 @@ function renderMarketScreen() {
 function renderMarketMoveList(moves) {
   if (!moves.length) return '<div class="empty">No market moves this season.</div>'
   const phaseTitle = {
-    retirement: 'RETIREMENTS',
-    signing:    'SIGNINGS',
-    overflow:   'SQUAD CAP RELEASES',
-    youth:      'NEW FROM YOUTH / NEW MANAGERS',
+    retirement:  'RETIREMENTS',
+    expire:      'CONTRACTS EXPIRED (→ FREE AGENCY)',
+    renew:       'CONTRACT RENEWALS',
+    youth:       'ROOKIES & NEW MANAGERS',
+    fa_sign:     'FREE AGENT SIGNINGS',
+    transfer:    'TRANSFERS',
+    cap_release: 'SQUAD CAP RELEASES',
+    signing:     'SIGNINGS',          // legacy
+    overflow:    'SQUAD CAP RELEASES', // legacy
   }
   const phaseColor = {
-    retirement: 'var(--silver)',
-    signing:    'var(--blue2)',
-    overflow:   'var(--gold)',
-    youth:      'var(--green)',
+    retirement:  'var(--silver)',
+    expire:      'var(--red)',
+    renew:       'var(--green)',
+    youth:       'var(--blue2)',
+    fa_sign:     'var(--gold)',
+    transfer:    'var(--blue2)',
+    cap_release: 'var(--silver)',
+    signing:     'var(--blue2)',
+    overflow:    'var(--gold)',
   }
-  const order = ['retirement', 'signing', 'overflow', 'youth']
+  const order = ['retirement', 'expire', 'renew', 'transfer', 'cap_release', 'fa_sign', 'youth', 'signing', 'overflow']
   let html = ''
   order.forEach(ph => {
-    const here = moves.filter(m => m.phase === ph)
+    const here = moves.filter(m => m.phase === ph && m.kind !== 'team')
     if (!here.length) return
     html += `<div class="sec" style="color:${phaseColor[ph]}">${phaseTitle[ph]} (${here.length})</div>`
     html += '<div class="market-list">'
@@ -934,10 +1048,38 @@ function renderMarketMoveCard(m) {
   let summary = ''
   if (m.phase === 'retirement') {
     summary = `Retires from ${flag(fromCC)} ${m.from}`
+  } else if (m.phase === 'expire') {
+    summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--red)">Free agency</span>`
+    if (m.reason) summary += ` <span style="color:var(--txt3);font-size:10px">(${m.reason})</span>`
+    if (typeof m.happiness === 'number') {
+      summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">Happiness ${m.happiness} · threshold ${m.tier ? ({generational:45,legendary:35,epic:25,rare:15,uncommon:5,common:0}[m.tier]) : '?'}</div>`
+    }
+  } else if (m.phase === 'renew') {
+    summary = `<span style="color:var(--green)">Renews with ${flag(toCC)} ${m.to}</span>`
+    if (m.contractYears) summary += ` <span style="color:var(--txt3);font-size:10px">(${m.contractYears} yr)</span>`
+  } else if (m.phase === 'fa_sign') {
+    summary = `<span style="color:var(--gold)">Free agency → ${flag(toCC)} ${m.to}</span>`
+    const bits = []
+    if (m.signFee)      bits.push(`fee ${m.signFee}M`)
+    if (m.salary)       bits.push(`${m.salary}M/yr`)
+    if (m.contractYears) bits.push(`${m.contractYears} yr`)
+    if (bits.length) summary += ` <span style="color:var(--txt3);font-size:10px">(${bits.join(' · ')})</span>`
+  } else if (m.phase === 'transfer') {
+    summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--blue2)">${flag(toCC)} ${m.to}</span>`
+    const bits = []
+    if (m.signFee)   bits.push(`fee ${m.signFee}M`)
+    if (m.saleValue) bits.push(`seller +${m.saleValue}M`)
+    if (m.salary)    bits.push(`${m.salary}M/yr`)
+    if (m.contractYears) bits.push(`${m.contractYears} yr`)
+    if (bits.length) summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">${bits.join(' · ')}</div>`
+    if (m.displaced) {
+      summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">↳ displaced <strong>${m.displaced.name}</strong> (${m.displaced.tier})</div>`
+    }
+  } else if (m.phase === 'cap_release') {
+    summary = `Released from ${flag(fromCC)} ${m.from} <span style="color:var(--txt3);font-size:10px">(${m.reason || 'displaced'})</span>`
   } else if (m.phase === 'signing') {
     summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--blue2)">${flag(toCC)} ${m.to}</span>`
     if (m.swap) {
-      // Pairwise coach swap: show the other half of the trade.
       summary += `<div style="margin-top:2px;color:var(--txt3)">↔ swapped with <strong>${m.swap.withName}</strong></div>`
     }
   } else if (m.phase === 'overflow') {
@@ -1006,7 +1148,7 @@ window.openTeamDetail = function(teamId) {
     if (!fromHist) return toast('Team not found.')
     return showDetailModal(renderTeamDetailHTML({
       id: fromHist.teamId, name: fromHist.teamName, cc: fromHist.cc,
-      base: 0, currentOverall: fromHist.overall || 0,
+      money: 0, currentOverall: fromHist.overall || 0,
     }))
   }
   showDetailModal(renderTeamDetailHTML(team))
@@ -1417,15 +1559,59 @@ function renderTeamDetailHTML(team) {
     </tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">No history for this team yet.</div>'
 
+  // GM/Director card — only render if this team has a GM (i.e. the
+  // game has been initialized; team comes from S.allTeams which has
+  // `.gm` attached after initStarsAndCoaches → ensureGMs).
+  const gm = team.gm
+  const gmCard = gm ? `
+    <div class="career-section-title">DIRECTOR</div>
+    <div class="gm-card" style="display:flex;gap:12px;align-items:flex-start;padding:10px 12px;background:rgba(255,255,255,.03);border:1px solid var(--brd);border-radius:8px;margin-bottom:14px">
+      <div style="font-size:24px;line-height:1">🎩</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:700;color:${tierColor(gm.tier)}">${gm.name}</span>
+          <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${tierColor(gm.tier)}22;color:${tierColor(gm.tier)};text-transform:uppercase;letter-spacing:.5px">${gm.tier}</span>
+          <span style="font-size:10px;color:var(--txt3)">${gm.tenureLeft}/${gm.tenureTotal} yr</span>
+        </div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:4px;line-height:1.5">
+          ${describeGMSkills(gm).map(line => `<div>${line}</div>`).join('')}
+        </div>
+      </div>
+    </div>` : ''
+
+  // Cash on hand — color-coded for solvency.
+  const cash = typeof team.cashOnHand === 'number' ? team.cashOnHand : null
+  const cashColor = cash == null ? 'var(--txt3)'
+                  : cash < 0      ? 'var(--red)'
+                  : cash < 5      ? 'var(--gold)'
+                                  : 'var(--green)'
+  const cashBadge = cash != null
+    ? `<span class="badge" style="background:${cashColor}22;color:${cashColor};border:1px solid ${cashColor}66;font-size:10px">💰 ${cash}M</span>`
+    : ''
+
+  // Splurge boost active for current season.
+  const splurgeBadge = team.splurgeActive
+    ? `<span class="badge" style="background:rgba(233,30,99,.15);color:#ff4081;border:1px solid rgba(233,30,99,.5);font-size:10px" title="This team spent $5M before the season for +5 to all stats">🔥 Splurge +5</span>`
+    : ''
+
+  const colors = team.colors || ['#444', '#fff']
+  const [primary, secondary] = colors
+
   return `
-    <div class="playback-header">
-      <div class="playback-round">Club Profile</div>
-      <span class="badge" style="background:rgba(240,192,64,.15);color:var(--gold);border:1px solid rgba(240,192,64,.4);font-size:10px">BASE ${team.base || '—'}</span>
+    <div class="team-hero" style="--team-primary:${primary};--team-secondary:${secondary}">
+      <div class="team-hero-bar"></div>
+      <div class="team-hero-content">
+        <div class="team-hero-eyebrow">Club Profile</div>
+        <div class="team-hero-name">${flag(team.cc)} ${team.name}</div>
+        <div class="team-hero-meta">
+          <span class="badge" style="background:rgba(240,192,64,.15);color:var(--gold);border:1px solid rgba(240,192,64,.4);font-size:10px">$ ${team.money || '—'}M${team.gm?.moneyBonus ? ` <span style="color:var(--green)">+${team.gm.moneyBonus}</span>` : ''}</span>
+          ${cashBadge}
+          ${splurgeBadge}
+          <span style="font-size:12px;color:var(--txt3)">Overall <strong style="color:var(--gold)">${team.currentOverall || '—'}</strong></span>
+        </div>
+      </div>
     </div>
-    <div style="font-family:var(--font-head);font-size:24px;font-weight:700;margin-bottom:4px">${flag(team.cc)} ${team.name}</div>
-    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">
-      Current season overall: <span style="color:var(--gold);font-weight:700">${team.currentOverall || '—'}</span>
-    </div>
+    ${gmCard}
     ${summary}
     ${careerTable}`
 }
@@ -1587,7 +1773,7 @@ function renderTeams() {
     const o = Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
     html += `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
       <td style="color:var(--txt3)">${i+1}</td>
-      <td><strong>${flag(t.cc)} ${t.name}</strong>${t.isLocalChampion ? ' <span class="badge badge-legendary" style="font-size:8px">CHAMP</span>' : ''}</td>
+      <td>${teamPill(t, { extra: t.isLocalChampion ? ' <span class="badge badge-legendary" style="font-size:8px">CHAMP</span>' : '' })}</td>
       <td class="num" style="color:var(--blue2)">${eff.attack}</td>
       <td class="num" style="color:var(--blue2)">${eff.defense}</td>
       <td class="num" style="color:var(--blue2)">${eff.stamina}</td>
