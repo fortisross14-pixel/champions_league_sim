@@ -16,6 +16,7 @@ import {
   describeStarSkills, describeCoachSkills, describeGMSkills, getStarSkillData,
   COACH_TRAITS,
   regenStarSkills, regenCoachSkills,
+  annualIncome, baseSpend, teamAnnualSalary, effectiveMoney,
 } from './engine/season.js'
 import { ovr, getEffStats } from './engine/match.js'
 import { COUNTRY_NAME } from './data/players.js'
@@ -776,7 +777,11 @@ function renderUpcomingGames() {
     }
   }
   if (!upcoming.length) return ''
-  const ovr = t => t.currentOverall || t.rating || 0
+  // Effective overall — includes star, coach, and GM bonuses.
+  const ovrEff = t => {
+    const eff = getEffStats(t)
+    return Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
+  }
   return `<div class="sec">${label}</div>` + upcoming.map((m, i) => {
     const groupTag = S.phase === 'groups' && S.groups[m.gi]
       ? `<span class="upcoming-tag">Group ${S.groups[m.gi].id}</span>`
@@ -784,9 +789,9 @@ function renderUpcomingGames() {
     const nextBadge = i === 0 ? '<span class="upcoming-next">NEXT</span>' : ''
     return `<div class="match-result-card upcoming-match">
       <div class="match-teams">
-        <div class="match-team">${flag(m.t1.cc)} ${m.t1.name} <span class="ovr-pill">${ovr(m.t1)}</span></div>
+        <div class="match-team">${flag(m.t1.cc)} ${m.t1.name} <span class="ovr-pill">${ovrEff(m.t1)}</span></div>
         <div class="upcoming-vs">vs ${groupTag}${nextBadge}</div>
-        <div class="match-team right"><span class="ovr-pill">${ovr(m.t2)}</span> ${m.t2.name} ${flag(m.t2.cc)}</div>
+        <div class="match-team right"><span class="ovr-pill">${ovrEff(m.t2)}</span> ${m.t2.name} ${flag(m.t2.cc)}</div>
       </div>
     </div>`
   }).join('')
@@ -1740,7 +1745,8 @@ function renderGroups() {
       </div>
       ${sorted.map((t, i) => {
         const played = (t.w||0) + (t.d||0) + (t.l||0)
-        const ovr = t.currentOverall || t.rating || 0
+        const eff = getEffStats(t)
+        const ovr = Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
         const colors = t.colors || ['#444','#fff']
         return `<div class="group-team ${i < 2 ? 'qualifies' : ''}" style="--team-primary:${colors[0]};--team-secondary:${colors[1]}">
           <span class="team-flag-cell">${flag(t.cc)}</span>
@@ -1812,6 +1818,8 @@ function renderBracket() {
 // ─────────────────────────────────────────────────────────────
 let teamSort = 'overall'
 
+let teamsSubTab = 'ratings'   // 'ratings' | 'finance'
+
 function renderTeams() {
   const el = $('tab-teams')
   // Show every team in the world, not just the 32 CL-qualified ones.
@@ -1820,6 +1828,7 @@ function renderTeams() {
     if (el) el.innerHTML = '<div class="empty">No teams yet — qualify first.</div>'
     return
   }
+
   // Build view-model rows: getEffStats expects `team.stats` and
   // `team.coach`, but allTeams entries store stats as `seasonStats`
   // and only carry a coachId. Resolve both here so sorts work and
@@ -1831,15 +1840,28 @@ function renderTeams() {
     const coach = coachById[t.id] || null
     const stars = t.stars || []
     const topStar = [...stars].sort((a,b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier))[0] || null
-    return {
-      ...t,
-      stats,
-      coach,
-      stars,
-      star: topStar,
-    }
+    return { ...t, stats, coach, stars, star: topStar }
   })
 
+  const subBtn = (k, label) => `
+    <button class="sub-tab ${teamsSubTab===k?'active':''}" onclick="setTeamsSubTab('${k}')">
+      ${label}
+    </button>`
+
+  let html = `<div class="sub-tab-row">
+    ${subBtn('ratings', '📊 Ratings')}
+    ${subBtn('finance', '💰 Finance')}
+  </div>`
+
+  if (teamsSubTab === 'finance') {
+    html += renderTeamsFinance(rows)
+  } else {
+    html += renderTeamsRatings(rows)
+  }
+  el.innerHTML = html
+}
+
+function renderTeamsRatings(rows) {
   const sorters = {
     overall:    (a,b) => ovr(getEffStats(b)) - ovr(getEffStats(a)),
     attack:     (a,b) => getEffStats(b).attack - getEffStats(a).attack,
@@ -1853,7 +1875,7 @@ function renderTeams() {
   let html = `<div class="sort-row">Sort: ${['overall','attack','defense','stamina','mental','setPieces','alphabetical'].map(k =>
     `<button class="sort-btn ${teamSort===k?'active':''}" onclick="setTeamSort('${k}')">${k}</button>`).join('')}
     </div>
-    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">Showing all ${rows.length} clubs in the world.</div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">Showing all ${rows.length} clubs. Stats include star/coach/GM bonuses.</div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th>#</th><th>Club</th><th>ATT</th><th>DEF</th><th>STA</th><th>MEN</th><th>SET</th><th>OVR</th><th>Star</th><th>Coach</th></tr></thead>
       <tbody>`
@@ -1874,14 +1896,82 @@ function renderTeams() {
     </tr>`
   })
   html += '</tbody></table></div>'
-  el.innerHTML = html
+  return html
 }
+
+function renderTeamsFinance(rows) {
+  // Build finance rows with all the relevant numbers.
+  const finance = rows.map(t => {
+    const baseMoney = t.money || 0
+    const effMoney = effectiveMoney(t)
+    const gmBonus = effMoney - baseMoney
+    const income = annualIncome(t)
+    const base = baseSpend(t)
+    const salary = teamAnnualSalary(t)
+    const net = income - base - salary
+    const cash = t.cashOnHand || 0
+    return { ...t, baseMoney, effMoney, gmBonus, income, base, salary, net, cash }
+  })
+
+  const sorters = {
+    income:  (a,b) => b.income - a.income,
+    salary:  (a,b) => b.salary - a.salary,
+    net:     (a,b) => b.net - a.net,
+    cash:    (a,b) => b.cash - a.cash,
+    name:    (a,b) => a.name.localeCompare(b.name),
+  }
+  const sorted = [...finance].sort(sorters[financeSort] || sorters.income)
+
+  let html = `<div class="sort-row">Sort: ${['income','salary','net','cash','name'].map(k =>
+    `<button class="sort-btn ${financeSort===k?'active':''}" onclick="setFinanceSort('${k}')">${k}</button>`).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">
+      Income = base money + GM bonus. Net = income − base spend − salaries. Cash carries over each season.
+    </div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr>
+        <th>Club</th>
+        <th title="Base team revenue">$ Base</th>
+        <th title="Bonus from general manager">+GM</th>
+        <th title="Annual income (base + GM bonus)">Income</th>
+        <th title="Annual base operating cost">− Base</th>
+        <th title="Annual salaries (players + coach)">− Salary</th>
+        <th title="Net annual surplus (income − base − salary)">= Net</th>
+        <th title="Cash on hand">Cash</th>
+        <th>GM</th>
+      </tr></thead><tbody>`
+  sorted.forEach(t => {
+    const gm = t.gm
+    const gmBadge = gm
+      ? `<span style="color:${tierColor(gm.tier)};font-size:11px">${gm.name}${gm.moneyBonus ? ` <span style="color:var(--green)">+${gm.moneyBonus}</span>` : ''}</span>`
+      : '<span style="color:var(--txt3)">—</span>'
+    const netColor = t.net > 0 ? 'var(--green)' : t.net < 0 ? 'var(--red)' : 'var(--txt2)'
+    html += `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
+      <td>${teamPill(t)}</td>
+      <td class="num">$${t.baseMoney}M</td>
+      <td class="num" style="color:${t.gmBonus > 0 ? 'var(--green)' : 'var(--txt3)'}">${t.gmBonus > 0 ? '+' + t.gmBonus : '—'}</td>
+      <td class="num" style="color:var(--gold);font-weight:700">$${t.income}M</td>
+      <td class="num" style="color:var(--txt3)">−$${t.base}M</td>
+      <td class="num" style="color:var(--txt3)">−$${t.salary}M</td>
+      <td class="num" style="color:${netColor};font-weight:700">${t.net >= 0 ? '+' : ''}$${t.net}M</td>
+      <td class="num" style="color:var(--blue2);font-weight:700">$${t.cash}M</td>
+      <td>${gmBadge}</td>
+    </tr>`
+  })
+  html += '</tbody></table></div>'
+  return html
+}
+
+window.setTeamsSubTab = function(k) { teamsSubTab = k; renderTeams(); parseEmoji(document.body) }
+window.setFinanceSort = function(k) { financeSort = k; renderTeams(); parseEmoji(document.body) }
+let financeSort = 'income'
 
 // ─────────────────────────────────────────────────────────────
 // STARS TAB — players + coaches with filters & sorts
 // ─────────────────────────────────────────────────────────────
 let starSort = 'rarity'
 let positionFilter = 'ALL'
+let starsSubTab = 'players'   // 'players' | 'coaches'
 let nationalityFilter = 'ALL'
 
 function renderStars() {
@@ -1891,16 +1981,31 @@ function renderStars() {
   const allStars = []
   ;(S.allTeams || []).forEach(t => {
     (t.stars || []).forEach(s => {
-      // Use the latest team info from allTeams (in case of transfers).
-      allStars.push({
-        ...s,
-        teamName: t.name,
-        teamCC: t.cc,
-      })
+      allStars.push({ ...s, teamName: t.name, teamCC: t.cc })
     })
   })
   const coaches = S.coaches || []
 
+  // Sub-tab buttons
+  const subBtn = (k, label, count) => `
+    <button class="sub-tab ${starsSubTab===k?'active':''}" onclick="setStarsSubTab('${k}')">
+      ${label}${count!=null?` <span class="sub-tab-count">${count}</span>`:''}
+    </button>`
+
+  let html = `<div class="sub-tab-row">
+    ${subBtn('players', '⭐ Players', allStars.length)}
+    ${subBtn('coaches', '🎯 Coaches', coaches.length)}
+  </div>`
+
+  if (starsSubTab === 'players') {
+    html += renderStarsPlayers(allStars)
+  } else {
+    html += renderStarsCoaches(coaches)
+  }
+  el.innerHTML = html
+}
+
+function renderStarsPlayers(allStars) {
   // Build the unique nationality list for the dropdown.
   const allNationalities = Array.from(new Set(allStars.map(s => s.nationality || s.cc))).sort()
 
@@ -1966,10 +2071,12 @@ function renderStars() {
     </div>`
   })
   html += '</div>'
+  return html
+}
 
-  // Coaches
+function renderStarsCoaches(coaches) {
   const sortedCoaches = [...coaches].sort((a,b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier))
-  html += `<div class="sec">COACHES (${coaches.length})</div>`
+  let html = `<div class="sec">COACHES (${coaches.length})</div>`
   sortedCoaches.forEach(c => {
     const team = S.allTeams?.find(t => t.id === c.teamId)
     const bonusStr = Object.entries(c.statBonus || {})
@@ -1987,8 +2094,10 @@ function renderStars() {
       ${tierBadge(c.tier)}
     </div>`
   })
-  el.innerHTML = html
+  return html
 }
+
+window.setStarsSubTab = function(k) { starsSubTab = k; renderStars(); parseEmoji(document.body) }
 
 window.setStarSort = function (k) { starSort = k; renderStars(); parseEmoji(document.body) }
 window.setPositionFilter = function (p) { positionFilter = p; renderStars(); parseEmoji(document.body) }

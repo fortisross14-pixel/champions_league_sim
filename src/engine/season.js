@@ -99,6 +99,21 @@ export function annualIncome(team) {
   return ECON.income[m] ?? m
 }
 
+// Total salary the team owes per year (sum of star + coach salaries
+// for those still under contract).
+export function teamAnnualSalary(team) {
+  let s = 0
+  for (const star of team.stars || []) {
+    if (!star.contract || star.contract.yearsLeft <= 0) continue
+    s += RARITY_ECON[star.tier]?.salary || 0
+  }
+  const coach = (S.coaches || []).find(c => c.teamId === team.id)
+  if (coach?.contract && coach.contract.yearsLeft > 0) {
+    s += RARITY_ECON[coach.tier]?.salary || 0
+  }
+  return s
+}
+
 // Splurge bonus: a top-tier club ($12M+ effective money) with
 // fewer than 3 premium stars and surplus cash spends $5M for a
 // +5 boost to all team stats next season. Threshold lowered from
@@ -1811,20 +1826,6 @@ export function runMarket() {
     if (typeof t.cashOnHand !== 'number') t.cashOnHand = 0
     if (!t.stars) t.stars = []
   })
-
-  // Helper: annual salary committed by a team (existing roster).
-  const teamAnnualSalary = team => {
-    let s = 0
-    for (const star of team.stars || []) {
-      if (!star.contract || star.contract.yearsLeft <= 0) continue
-      s += RARITY_ECON[star.tier]?.salary || 0
-    }
-    const coach = S.coaches.find(c => c.teamId === team.id)
-    if (coach?.contract && coach.contract.yearsLeft > 0) {
-      s += RARITY_ECON[coach.tier]?.salary || 0
-    }
-    return s
-  }
 
   // ── 1. Retirements ────────────────────────────────────────
   S.allTeams.forEach(team => {
