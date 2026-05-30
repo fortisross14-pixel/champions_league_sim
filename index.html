@@ -11,8 +11,11 @@
      show up consistently on Windows (where the system fonts have no
      flag glyphs at all) and other platforms with limited emoji
      support. main.js calls `window.twemoji.parse(document.body)` after
-     each render. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/twemoji.min.js" crossorigin="anonymous"></script>
+     each render. Fallback: if cdnjs is blocked, try unpkg, then
+     jsdelivr. If all fail, country codes will display as small badges
+     via CSS.  -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/twemoji.min.js" crossorigin="anonymous"
+  onerror="this.replaceWith(Object.assign(document.createElement('script'),{src:'https://unpkg.com/twemoji@14.0.2/dist/twemoji.min.js',crossOrigin:'anonymous',onerror:function(){this.replaceWith(Object.assign(document.createElement('script'),{src:'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js',crossOrigin:'anonymous'}))}}))"></script>
 </head>
 <body>
 
@@ -32,6 +35,7 @@
     <div class="header-right">
       <span id="last-saved" class="saved-stamp"></span>
       <button class="btn btn-primary" id="btn-main" onclick="handleMain()">▶ New Season</button>
+      <button class="btn btn-icon" onclick="returnToHome()" title="Return to slot picker">🏠</button>
       <button class="btn btn-icon" onclick="openSettings()">⚙</button>
     </div>
   </header>

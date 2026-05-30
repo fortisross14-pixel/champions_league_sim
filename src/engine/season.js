@@ -500,6 +500,41 @@ export function describeStarSkills(star) {
   return lines
 }
 
+// Structured form of star skills for the visual modal. Returns:
+//   stats: { attack, defense, stamina, mental, setPieces }  (delta from base)
+//   scoring: array of { goals, percent } where percent >= 0.5%
+//   savePct: number 0..1 (only for GK/DEF; null otherwise)
+//   trait: { name, description } | null
+//   contract: { yearsLeft, yearsTotal, salary } | null
+//   careerStage: { label, percent } | null
+export function getStarSkillData(star) {
+  const stats = { ...(STAT_BONUSES[star.pos]?.[star.tier] || {}) }
+  const dist = GOAL_DIST[star.pos]?.[star.tier]
+  let scoring = null
+  if (dist && dist.some((p,i) => i>0 && p>0.005)) {
+    scoring = dist.map((p,i) => ({ goals: i, percent: p })).filter(x => x.percent > 0.005)
+  }
+  const savePct = ['GK','DEF'].includes(star.pos) ? (SAVE_PROB[star.pos]?.[star.tier] || 0) : null
+  const trait = star.trait ? { name: star.trait.name, description: star.trait.description } : null
+  const contract = star.contract ? {
+    yearsLeft: star.contract.yearsLeft,
+    yearsTotal: star.contract.yearsTotal,
+    salary: RARITY_ECON[star.tier]?.salary || 0,
+  } : null
+  let careerStage = null
+  const mult = typeof star.careerMult === 'number' ? star.careerMult : 1.0
+  if (mult < 1.0) {
+    const cs = S.season || 1
+    const age = cs - (star.season || 1)
+    let label
+    if (age <= 1) label = 'Rookie year'
+    else if (age === 2) label = 'Sophomore'
+    else label = 'Farewell tour'
+    careerStage = { label, percent: Math.round(mult * 100) }
+  }
+  return { stats, scoring, savePct, trait, contract, careerStage }
+}
+
 // ── Team season stats update ─────────────────────────────────
 // Every team has a permanent `money` rating (set in teams.js — Real
 // Madrid 12, mid-tier 8-9, minnows 6). Effective money for stat
@@ -1504,6 +1539,11 @@ export function advanceKnockout() {
 }
 
 function finalizeSeasonStats() {
+  // Guard: if the season has already been finalized (history entry
+  // exists for this season number), bail out. Otherwise double
+  // taps could double-count champions / titles / awards.
+  if ((S.history || []).some(h => h.season === S.season)) return
+
   const famePts = { Winner:300, Final:150, 'Semi-finals':75, 'Quarter-finals':30, 'Round of 16':10 }
   // Players whose team made it to at least the quarterfinals are
   // eligible for the offensive/defensive MVP awards. Group-stage and
@@ -1975,9 +2015,24 @@ export function runMarket() {
   })
 
   // ── 4. Rookie spawn (empty rosters only) ──────────────────
+  const isOpeningMarket = (S.season || 1) === 1
   S.allTeams.forEach(team => {
     if (team.stars.length === 0) {
       const ns = genStar(team)
+      // First market of the world: stagger ages and contracts so the
+      // initial roster isn't all year-1 rookies. Pretend each star
+      // signed somewhere in the past — `season` shifts back by 0..(lifespan-1)
+      // years; contract yearsLeft also gets shuffled across 1..total.
+      if (isOpeningMarket) {
+        const startedAgo = rand(0, Math.max(0, (ns.lifespan || 10) - 2))
+        ns.season = 1 - startedAgo
+        if (ns.contract) {
+          const total = ns.contract.yearsTotal || rand(3, 6)
+          ns.contract.yearsTotal = total
+          ns.contract.yearsLeft = rand(1, total)
+          ns.contract.signedSeason = 1 - rand(0, total - 1)
+        }
+      }
       team.stars.push(ns)
       moves.push({
         phase: 'youth', kind: 'player',
@@ -1991,6 +2046,17 @@ export function runMarket() {
   S.allTeams.forEach(team => {
     if (team.coachId && S.coaches.find(c => c.id === team.coachId)) return
     const nc = genCoach(team)
+    // Opening-market stagger so coaches aren't all year-1 either.
+    if (isOpeningMarket) {
+      const startedAgo = rand(0, Math.max(0, (nc.lifespan || 8) - 2))
+      nc.season = 1 - startedAgo
+      if (nc.contract) {
+        const total = nc.contract.yearsTotal || rand(3, 6)
+        nc.contract.yearsTotal = total
+        nc.contract.yearsLeft = rand(1, total)
+        nc.contract.signedSeason = 1 - rand(0, total - 1)
+      }
+    }
     team.coachId = nc.id
     S.coaches.push(nc)
     moves.push({

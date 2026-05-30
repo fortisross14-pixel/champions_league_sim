@@ -4,6 +4,8 @@ import {
   snapshotPreSeason, snapshotPreTournament,
   hasPreSeasonSnapshot, hasPreTournamentSnapshot,
   restartSeason, restartTournament,
+  getActiveSlot, setActiveSlot, clearActiveSlot,
+  getSlotSummaries, startFreshInSlot, SLOT_KEYS,
 } from './store.js'
 import {
   runQualification, drawGroups, initStarsAndCoaches, linkStarsToTeams,
@@ -11,7 +13,7 @@ import {
   runMarket, runTransfers, startNewSeason, runLocalLeagues,
   runStatsUpdate,
   tierOf, tierLabel, tierColor,
-  describeStarSkills, describeCoachSkills, describeGMSkills,
+  describeStarSkills, describeCoachSkills, describeGMSkills, getStarSkillData,
   COACH_TRAITS,
   regenStarSkills, regenCoachSkills,
 } from './engine/season.js'
@@ -390,6 +392,8 @@ function showMatchPopup(r, roundName, onClose) {
     const skipBtn = isFinal ? '' : `<button class="btn btn-sm" onclick="window.skipPlayback()">Skip ⏭</button>`
     const closeBtn = isFinal ? `<button class="btn btn-primary" onclick="window.closePlayback()">Continue ▶</button>` : ''
 
+    const t1Colors = t1.colors || ['#444', '#fff']
+    const t2Colors = t2.colors || ['#444', '#fff']
     inner.innerHTML = `
       <div class="playback-card">
         <div class="playback-header">
@@ -397,18 +401,24 @@ function showMatchPopup(r, roundName, onClose) {
           <div class="playback-clock ${isFinal?'final':''}">${isFinal ? 'FT' : currentMinute + "'"}</div>
         </div>
         <div class="playback-score-row">
-          <div class="playback-team-block">
-            <div class="playback-team-name">${flag(t1.cc)} ${t1.name}</div>
-            ${star1 ? `<div class="playback-team-star" style="color:${tierColor(star1.tier)}">⭐ ${star1.name} (${star1.pos})</div>` : ''}
+          <div class="playback-team-block" style="--team-primary:${t1Colors[0]};--team-secondary:${t1Colors[1]}">
+            <div class="playback-team-stripe"></div>
+            <div class="playback-team-inner">
+              <div class="playback-team-name">${flag(t1.cc)} ${t1.name}</div>
+              ${star1 ? `<div class="playback-team-star" style="color:${tierColor(star1.tier)}">⭐ ${star1.name} (${star1.pos})</div>` : ''}
+            </div>
           </div>
           <div class="playback-score">
             <span class="${score1 > score2 ? 'lead' : ''}">${score1}</span>
             <span class="dash">–</span>
             <span class="${score2 > score1 ? 'lead' : ''}">${score2}</span>
           </div>
-          <div class="playback-team-block right">
-            <div class="playback-team-name">${t2.name} ${flag(t2.cc)}</div>
-            ${star2 ? `<div class="playback-team-star" style="color:${tierColor(star2.tier)}">⭐ ${star2.name} (${star2.pos})</div>` : ''}
+          <div class="playback-team-block right" style="--team-primary:${t2Colors[0]};--team-secondary:${t2Colors[1]}">
+            <div class="playback-team-inner">
+              <div class="playback-team-name">${t2.name} ${flag(t2.cc)}</div>
+              ${star2 ? `<div class="playback-team-star" style="color:${tierColor(star2.tier)}">⭐ ${star2.name} (${star2.pos})</div>` : ''}
+            </div>
+            <div class="playback-team-stripe"></div>
           </div>
         </div>
 
@@ -1109,10 +1119,28 @@ function renderMarketMoveCard(m) {
 
 // ── Star/coach detail popups ────────────────────────────────
 window.openStarDetail = function(starId) {
-  const allStars = (S.allTeams || []).flatMap(t => t.stars || [])
-  const star = allStars.find(s => s.id === starId)
-  if (!star) return toast('Player not found.')
-  showDetailModal(renderStarDetailHTML(star))
+  // Check team rosters first
+  const teamStars = (S.allTeams || []).flatMap(t => t.stars || [])
+  let star = teamStars.find(s => s.id === starId)
+  if (star) return showDetailModal(renderStarDetailHTML(star))
+  // Check free agents
+  star = (S.freeAgents?.stars || []).find(s => s.id === starId)
+  if (star) return showDetailModal(renderStarDetailHTML(star))
+  // Check historical snapshots for retired/lost players
+  const histStar = [...(S.history || [])].reverse()
+    .flatMap(h => [...(h.teamSeasons || []), ...(h.dnqTeams || [])])
+    .flatMap(ts => ts.stars || [])
+    .find(s => s?.id === starId)
+  if (histStar) {
+    // Build a stub for retired players with available data
+    const career = S.playerStats?.[starId]
+    return showDetailModal(renderStarDetailHTML({
+      ...histStar,
+      retired: true,
+      career,
+    }))
+  }
+  toast('Player not found.')
 }
 window.openCoachDetail = function(coachId) {
   const live = (S.coaches || []).find(c => c.id === coachId)
@@ -1275,26 +1303,86 @@ function renderStarDetailHTML(star) {
     </tr>`).join('')}
     </tbody></table></div>` : ''
 
+  // Visual skill data
+  const skillData = getStarSkillData(star)
+  const STAT_COLORS = { attack:'#ff7043', defense:'#42a5f5', stamina:'#66bb6a', mental:'#ab47bc', setPieces:'#ffca28' }
+  const STAT_LABELS = { attack:'ATTACK', defense:'DEFENSE', stamina:'STAMINA', mental:'MENTAL', setPieces:'SET PIECES' }
+  const statKeys = ['attack','defense','stamina','mental','setPieces']
+  const maxStat = Math.max(...statKeys.map(k => skillData.stats[k] || 0), 1)
+
+  const statBarsHTML = statKeys.filter(k => (skillData.stats[k] || 0) > 0).map(k => `
+    <div class="skill-stat-row">
+      <div class="skill-stat-label">${STAT_LABELS[k]}</div>
+      <div class="skill-stat-bar"><div class="skill-stat-fill" style="width:${(skillData.stats[k]/maxStat)*100}%;background:${STAT_COLORS[k]}"></div></div>
+      <div class="skill-stat-value">+${skillData.stats[k]}</div>
+    </div>`).join('')
+
+  const scoringHTML = skillData.scoring ? `
+    <div class="skill-block">
+      <div class="skill-block-title">⚽ SCORING POTENTIAL</div>
+      <div class="skill-scoring-bar">
+        ${skillData.scoring.map(s => `<div class="skill-scoring-seg seg-${s.goals}" style="flex:${s.percent}" title="${Math.round(s.percent*100)}% chance of scoring ${s.goals} goal${s.goals===1?'':'s'}">
+          <div class="skill-scoring-pct">${Math.round(s.percent*100)}%</div>
+          <div class="skill-scoring-sub">${s.goals}g</div>
+        </div>`).join('')}
+      </div>
+    </div>` : ''
+
+  const saveHTML = skillData.savePct !== null ? `
+    <div class="skill-block">
+      <div class="skill-block-title">🧤 DEFENSIVE PRESENCE</div>
+      <div class="skill-save-card">
+        <div class="skill-save-num">${Math.round(skillData.savePct*100)}<span style="font-size:14px">%</span></div>
+        <div class="skill-save-label">chance to deny each opposing goal</div>
+      </div>
+    </div>` : ''
+
+  const traitHTML = skillData.trait ? `
+    <div class="skill-trait-card">
+      <div class="skill-trait-icon">✦</div>
+      <div class="skill-trait-body">
+        <div class="skill-trait-name">${skillData.trait.name}</div>
+        <div class="skill-trait-desc">${skillData.trait.description}</div>
+      </div>
+    </div>` : ''
+
+  const careerStageHTML = skillData.careerStage ? `
+    <div class="skill-meta-pill">
+      📈 ${skillData.careerStage.label} — ${skillData.careerStage.percent}% potential
+    </div>` : ''
+
+  const contractHTML = skillData.contract ? `
+    <div class="skill-meta-pill">
+      📜 ${skillData.contract.yearsLeft}/${skillData.contract.yearsTotal} yr · $${skillData.contract.salary}M/yr
+    </div>` : ''
+
   return `
     <div class="playback-header">
       <div class="playback-round">Player Profile</div>
       ${tierBadge(star.tier)}
     </div>
-    <div style="font-family:var(--font-head);font-size:24px;font-weight:700;margin-bottom:4px">${star.name}</div>
-    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">
+    <div style="font-family:var(--font-head);font-size:26px;font-weight:800;margin-bottom:4px">${star.name}</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:4px">
       ${flag(star.nationality)} ${country} · ${star.pos} ·
       ${flag(team?.cc || '')} ${team?.name || star.teamName || '—'}
     </div>
-    <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">
       Age: ${age + 22} (${age}/${star.lifespan} seasons in career) ·
       Career goals: <span style="color:var(--gold)">${star.goals || 0}</span>
     </div>
+    <div class="skill-meta-row">
+      ${contractHTML}
+      ${careerStageHTML}
+    </div>
     ${awardsSummary}
-    ${careerTable}
-    <div class="career-section-title" style="margin-top:14px">SKILLS</div>
-    <div class="star-skills">
-      ${skills.map(s => `<div class="star-skill-line">${s}</div>`).join('')}
-    </div>`
+    <div class="skill-block">
+      <div class="skill-block-title">📊 SKILL BOOST TO TEAM</div>
+      ${statBarsHTML || '<div style="color:var(--txt3);font-size:12px">No direct stat impact for this position/tier</div>'}
+    </div>
+    ${scoringHTML}
+    ${saveHTML}
+    ${traitHTML}
+    ${careerTable}`
 }
 
 function renderCoachDetailHTML(coach) {
@@ -1653,9 +1741,10 @@ function renderGroups() {
       ${sorted.map((t, i) => {
         const played = (t.w||0) + (t.d||0) + (t.l||0)
         const ovr = t.currentOverall || t.rating || 0
-        return `<div class="group-team ${i < 2 ? 'qualifies' : ''}">
+        const colors = t.colors || ['#444','#fff']
+        return `<div class="group-team ${i < 2 ? 'qualifies' : ''}" style="--team-primary:${colors[0]};--team-secondary:${colors[1]}">
           <span class="team-flag-cell">${flag(t.cc)}</span>
-          <span class="team-name-cell"><span class="team-name-link" onclick="window.openTeamDetail('${t.id}')">${t.name}</span>${legendStar(t)}</span>
+          <span class="team-name-cell"><span class="team-color-dot"></span><span class="team-name-link" onclick="window.openTeamDetail('${t.id}')">${t.name}</span>${legendStar(t)}</span>
           <span class="hcell ovr-cell">${ovr}</span>
           <span class="hcell">${played}</span>
           <span class="hcell">${t.w||0}</span>
@@ -2636,18 +2725,144 @@ window.confirmAccept = () => { $('confirm-overlay').style.display = 'none'; _con
 window.confirmDeny   = () => { $('confirm-overlay').style.display = 'none'; _confirmCb = null }
 
 // ─────────────────────────────────────────────────────────────
-// INIT
+// HOME PAGE — slot selection
 // ─────────────────────────────────────────────────────────────
-async function init() {
-  const loaded = await loadGame()
-  if (!loaded) {
-    S.phase = S.phase || 'idle'
-    S.season = S.season || 1
+async function showHomePage() {
+  // Hide the main app shell, render the home overlay
+  const app = $('app')
+  if (app) app.style.display = 'none'
+
+  // Remove any prior home overlay
+  let home = $('home-overlay')
+  if (home) home.remove()
+
+  const slots = await getSlotSummaries()
+  home = document.createElement('div')
+  home.id = 'home-overlay'
+  home.className = 'home-overlay'
+
+  const fmtSavedAt = (t) => {
+    if (!t) return '—'
+    const d = new Date(t)
+    const today = new Date()
+    if (d.toDateString() === today.toDateString()) {
+      return 'Today, ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  const slotCards = slots.map((s, i) => {
+    const num = i + 1
+    if (!s.exists) {
+      return `
+        <div class="home-slot home-slot-empty" onclick="window.startSlot('${s.key}')">
+          <div class="home-slot-num">SLOT ${num}</div>
+          <div class="home-slot-empty-icon">＋</div>
+          <div class="home-slot-empty-label">Empty</div>
+          <div class="home-slot-empty-cta">Tap to start new game</div>
+        </div>`
+    }
+    return `
+      <div class="home-slot home-slot-active" onclick="window.continueSlot('${s.key}')">
+        <div class="home-slot-num">SLOT ${num}</div>
+        <div class="home-slot-season">SEASON ${s.season}</div>
+        ${s.championName ? `
+          <div class="home-slot-champ">
+            <div class="home-slot-champ-trophy">🏆</div>
+            <div class="home-slot-champ-info">
+              <div class="home-slot-champ-label">Last Champion</div>
+              <div class="home-slot-champ-name">${flag(s.championCC || '')} ${s.championName}</div>
+            </div>
+          </div>` : `
+          <div class="home-slot-champ" style="opacity:.6">
+            <div class="home-slot-champ-trophy">⚽</div>
+            <div class="home-slot-champ-info">
+              <div class="home-slot-champ-label">In progress</div>
+              <div class="home-slot-champ-name">No champion yet</div>
+            </div>
+          </div>`}
+        <div class="home-slot-meta">${fmtSavedAt(s.savedAt)}</div>
+        <div class="home-slot-actions">
+          <button class="btn btn-primary" onclick="event.stopPropagation();window.continueSlot('${s.key}')">▶ Continue</button>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();window.deleteSlotConfirm('${s.key}',${num})">🗑</button>
+        </div>
+      </div>`
+  }).join('')
+
+  home.innerHTML = `
+    <div class="home-stars-bg"></div>
+    <div class="home-content">
+      <div class="home-header">
+        <div class="home-star">★</div>
+        <div>
+          <div class="home-title">CHAMPIONS LEAGUE</div>
+          <div class="home-sub">SIMULATOR</div>
+        </div>
+      </div>
+      <div class="home-slots">${slotCards}</div>
+      <div class="home-footer">
+        Pick a save slot to continue or start a new game. Progress auto-saves after each action.
+      </div>
+    </div>`
+  document.body.appendChild(home)
+  parseEmoji(home)
+}
+
+window.startSlot = async function(slotKey) {
+  startFreshInSlot(slotKey)
+  await hideHomeAndBoot(true)
+}
+
+window.continueSlot = async function(slotKey) {
+  setActiveSlot(slotKey)
+  await hideHomeAndBoot(false)
+}
+
+window.deleteSlotConfirm = async function(slotKey, num) {
+  if (!confirm(`Delete Slot ${num}? This cannot be undone.`)) return
+  const { deleteSlot } = await import('./store.js')
+  await deleteSlot(slotKey)
+  await showHomePage()
+}
+
+window.returnToHome = async function() {
+  if (!confirm('Return to home? Current progress is auto-saved.')) return
+  clearActiveSlot()
+  // Hard reload so all in-memory state resets cleanly.
+  location.reload()
+}
+
+async function hideHomeAndBoot(isFresh) {
+  const home = $('home-overlay')
+  if (home) home.remove()
+  const app = $('app')
+  if (app) app.style.display = ''
+
+  if (!isFresh) {
+    // Try to load existing data from the slot
+    const ok = await loadGame()
+    if (!ok) {
+      S.phase = 'idle'
+      S.season = 1
+    }
+  } else {
+    S.phase = 'idle'
+    S.season = 1
   }
   updatePhaseUI()
   renderPlay()
   if (S.groups?.length) renderGroups()
   if (S.knockoutRounds?.length) renderBracket()
   parseEmoji(document.body)
+  await autoSave()
+}
+
+// ─────────────────────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────────────────────
+async function init() {
+  // Always show the home page first. The user picks a slot;
+  // hideHomeAndBoot() takes care of loading or starting fresh.
+  await showHomePage()
 }
 init()

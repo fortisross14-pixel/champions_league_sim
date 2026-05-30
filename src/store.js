@@ -2,6 +2,57 @@
 import { ALL_TEAMS } from './data/teams.js'
 
 const DB_NAME = 'cls', DB_VER = 1, STORE = 'saves', AUTO_KEY = 'autosave'
+
+// Save slot system. Three fixed slots; the active slot key is stored
+// in localStorage. autoSave() and loadGame() both target the active
+// slot. The old AUTO_KEY is kept as a fallback for migrating users.
+const SLOT_KEYS = ['slot_1', 'slot_2', 'slot_3']
+const ACTIVE_SLOT_LS = 'cls_active_slot'
+
+export function getActiveSlot() {
+  try { return localStorage.getItem(ACTIVE_SLOT_LS) } catch { return null }
+}
+export function setActiveSlot(key) {
+  if (!SLOT_KEYS.includes(key)) return
+  try { localStorage.setItem(ACTIVE_SLOT_LS, key) } catch {}
+}
+export function clearActiveSlot() {
+  try { localStorage.removeItem(ACTIVE_SLOT_LS) } catch {}
+}
+export { SLOT_KEYS }
+
+// Build a slot summary { key, exists, season, championName, savedAt, slotName }
+// for each of the 3 slots — used by the home page to draw cards.
+export async function getSlotSummaries() {
+  const out = []
+  for (const key of SLOT_KEYS) {
+    try {
+      const d = await dbLoad(key)
+      if (!d || !d.allTeams) {
+        out.push({ key, exists: false })
+        continue
+      }
+      const seasonNum = d.season || 1
+      const lastHist = (d.history || []).slice(-1)[0]
+      out.push({
+        key, exists: true,
+        season: seasonNum,
+        championName: lastHist?.championName || null,
+        championCC: lastHist?.cc || null,
+        savedAt: d.savedAt || null,
+        slotName: d.slotName || null,
+      })
+    } catch (e) {
+      out.push({ key, exists: false })
+    }
+  }
+  return out
+}
+
+export async function deleteSlot(key) {
+  if (!SLOT_KEYS.includes(key)) return
+  await dbDelete(key)
+}
 let _db = null
 
 async function getDB() {
@@ -114,7 +165,9 @@ export function buildSave() {
 
 export async function autoSave() {
   try {
-    await dbSave(AUTO_KEY, buildSave())
+    const slot = getActiveSlot()
+    if (!slot) return  // no active slot — home page is up, don't save
+    await dbSave(slot, buildSave())
     const el = document.getElementById('last-saved')
     if (el) el.textContent = 'Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   } catch (e) { console.warn('autosave failed', e) }
@@ -209,11 +262,13 @@ function mergeStaticTeamData(data) {
 
 export async function loadGame() {
   try {
-    const d = await dbLoad(AUTO_KEY)
+    const slot = getActiveSlot()
+    if (!slot) return false
+    const d = await dbLoad(slot)
     if (!d) return false
     if (isLegacySave(d)) {
       console.warn('[store] Detected legacy save (pre-v6 economy). Wiping it — please start a new game.')
-      await dbDelete(AUTO_KEY)
+      await dbDelete(slot)
       return false
     }
     resetState()
@@ -224,8 +279,17 @@ export async function loadGame() {
   } catch (e) { return false }
 }
 
+// Start a fresh game in the given slot. Resets state in memory;
+// the first autoSave() call will persist it.
+export function startFreshInSlot(slotKey) {
+  if (!SLOT_KEYS.includes(slotKey)) return
+  setActiveSlot(slotKey)
+  resetState()
+}
+
 export async function clearGame() {
-  await dbDelete(AUTO_KEY)
+  const slot = getActiveSlot()
+  if (slot) await dbDelete(slot)
 }
 
 // Named slots
@@ -252,10 +316,6 @@ export async function loadSlot(key) {
 export async function allSlots() {
   const all = await dbAll()
   return all.filter(x => x.key.startsWith('slot__')).map(x => x.data)
-}
-
-export async function deleteSlot(key) {
-  await dbDelete(key)
 }
 
 // ── Restart-point snapshots ──────────────────────────────────

@@ -636,9 +636,33 @@ table.data-table .num { text-align: center; }
   padding: 14px 8px;
 }
 .playback-team-block {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  display: flex; gap: 8px; align-items: stretch;
+  position: relative;
 }
-.playback-team-block.right { align-items: flex-end; text-align: right; }
+.playback-team-stripe {
+  width: 4px;
+  border-radius: 4px;
+  background: var(--team-primary, var(--blue));
+  box-shadow: 0 0 8px var(--team-primary, var(--blue));
+  flex-shrink: 0;
+}
+.playback-team-inner {
+  display: flex; flex-direction: column;
+  align-items: flex-start; gap: 4px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--team-primary, #1e6dff) 22%, transparent) 0%,
+    transparent 90%);
+  border-radius: 6px;
+  padding: 6px 10px;
+  flex: 1;
+}
+.playback-team-block.right { flex-direction: row-reverse; }
+.playback-team-block.right .playback-team-inner {
+  align-items: flex-end; text-align: right;
+  background: linear-gradient(270deg,
+    color-mix(in srgb, var(--team-primary, #1e6dff) 22%, transparent) 0%,
+    transparent 90%);
+}
 .playback-team-name {
   font-family: var(--font-head); font-weight: 700; font-size: 17px;
   color: var(--txt); letter-spacing: .03em;
@@ -1663,4 +1687,315 @@ img.twemoji-img {
 .team-hero-meta {
   display: flex; align-items: center; gap: 8px;
   flex-wrap: wrap;
+}
+
+/* ── Flag emoji fallback ──────────────────────────────────── */
+/* When twemoji can't load, regional indicator emoji show as small
+   letter pairs in Windows fonts. Make those look intentional as a
+   compact country-code badge. The twemoji-img class is applied by
+   twemoji when it succeeds; absence means we got the fallback. */
+.flag-emoji {
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 1;
+}
+.flag-emoji img.twemoji-img {
+  height: 1em;
+  width: 1.4em;
+  object-fit: contain;
+  vertical-align: -0.15em;
+  margin-right: 2px;
+}
+
+/* ── Player modal — visual skill blocks ──────────────────── */
+.skill-meta-row {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.skill-meta-pill {
+  font-size: 11px;
+  padding: 4px 10px;
+  background: rgba(74,154,255,.08);
+  border: 1px solid rgba(74,154,255,.25);
+  border-radius: 999px;
+  color: var(--txt2);
+}
+.skill-block {
+  background: rgba(10,17,48,.5);
+  border: 1px solid rgba(74,154,255,.18);
+  border-radius: var(--R);
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+.skill-block-title {
+  font-family: var(--font-head);
+  font-size: 11px;
+  letter-spacing: .15em;
+  color: var(--txt3);
+  margin-bottom: 10px;
+}
+.skill-stat-row {
+  display: grid;
+  grid-template-columns: 85px 1fr 40px;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.skill-stat-row:last-child { margin-bottom: 0; }
+.skill-stat-label {
+  font-family: var(--font-head);
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--txt2);
+  font-weight: 600;
+}
+.skill-stat-bar {
+  height: 8px;
+  background: rgba(255,255,255,.05);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.skill-stat-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width .3s;
+  box-shadow: 0 0 8px currentColor;
+}
+.skill-stat-value {
+  font-family: var(--font-head);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  text-align: right;
+}
+
+.skill-scoring-bar {
+  display: flex;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255,255,255,.04);
+  height: 50px;
+  gap: 2px;
+}
+.skill-scoring-seg {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  min-width: 40px;
+  padding: 6px 4px;
+  font-family: var(--font-head);
+  font-weight: 700;
+  transition: all .2s;
+}
+.skill-scoring-seg:hover { filter: brightness(1.2); }
+.skill-scoring-seg.seg-0 { background: rgba(120,120,140,.3); color: var(--txt2); }
+.skill-scoring-seg.seg-1 { background: rgba(76,175,80,.4); color: #c8e6c9; }
+.skill-scoring-seg.seg-2 { background: rgba(33,150,243,.5); color: #bbdefb; }
+.skill-scoring-seg.seg-3 { background: rgba(156,39,176,.55); color: #e1bee7; }
+.skill-scoring-seg.seg-4 { background: rgba(255,152,0,.6); color: #ffe0b2; }
+.skill-scoring-seg.seg-5 { background: rgba(233,30,99,.65); color: #f8bbd0; }
+.skill-scoring-pct { font-size: 14px; line-height: 1; }
+.skill-scoring-sub { font-size: 9px; opacity: .85; margin-top: 2px; letter-spacing: .05em; }
+
+.skill-save-card {
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(135deg, rgba(66,165,245,.15), rgba(66,165,245,.05));
+  border: 1px solid rgba(66,165,245,.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.skill-save-num {
+  font-family: var(--font-head);
+  font-size: 32px;
+  font-weight: 800;
+  color: #64b5f6;
+  line-height: 1;
+}
+.skill-save-label {
+  font-size: 12px;
+  color: var(--txt2);
+}
+
+.skill-trait-card {
+  display: flex;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(245,200,66,.12), rgba(245,200,66,.03));
+  border: 1px solid rgba(245,200,66,.35);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+.skill-trait-icon {
+  font-size: 24px;
+  color: var(--gold);
+  text-shadow: 0 0 12px rgba(245,200,66,.5);
+}
+.skill-trait-body { flex: 1; }
+.skill-trait-name {
+  font-family: var(--font-head);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 3px;
+}
+.skill-trait-desc {
+  font-size: 12px;
+  color: var(--txt2);
+  line-height: 1.4;
+}
+
+/* ── Home page (slot picker) ─────────────────────────────── */
+.home-overlay {
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(1200px 600px at 50% -100px, #1a3496 0%, transparent 60%),
+    radial-gradient(800px 400px at 90% 100%, #1e3a7a 0%, transparent 55%),
+    linear-gradient(180deg, #050a25 0%, #050818 100%);
+  z-index: 10000;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.home-content {
+  width: 100%;
+  max-width: 980px;
+  text-align: center;
+}
+.home-header {
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  margin-bottom: 36px;
+}
+.home-star {
+  font-size: 56px; color: var(--gold);
+  text-shadow: 0 0 30px rgba(245,200,66,0.7), 0 0 12px rgba(245,200,66,0.5);
+  line-height: 1;
+}
+.home-title {
+  font-family: var(--font-head);
+  font-size: 32px; font-weight: 900;
+  letter-spacing: .12em;
+  color: var(--txt);
+  text-align: left;
+  line-height: 1;
+}
+.home-sub {
+  font-family: var(--font-head);
+  font-size: 14px; font-weight: 700;
+  letter-spacing: .25em;
+  color: var(--cyan);
+  text-align: left;
+  margin-top: 4px;
+}
+.home-slots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 28px;
+}
+.home-slot {
+  background: linear-gradient(180deg, rgba(15,24,64,.85), rgba(10,17,48,.85));
+  border: 1px solid rgba(74,154,255,.25);
+  border-radius: 16px;
+  padding: 22px 20px;
+  text-align: left;
+  cursor: pointer;
+  transition: all .2s;
+  min-height: 230px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.home-slot::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  background: linear-gradient(90deg, var(--blue), var(--cyan));
+  opacity: 0;
+  transition: opacity .2s;
+}
+.home-slot:hover {
+  border-color: var(--cyan);
+  box-shadow: 0 8px 24px rgba(78,233,255,.15);
+  transform: translateY(-2px);
+}
+.home-slot:hover::before { opacity: 1; }
+.home-slot-num {
+  font-family: var(--font-head);
+  font-size: 11px; letter-spacing: .25em; font-weight: 700;
+  color: var(--cyan);
+  margin-bottom: 10px;
+}
+.home-slot-empty {
+  align-items: center; justify-content: center; text-align: center;
+  border-style: dashed;
+  opacity: .75;
+}
+.home-slot-empty:hover { opacity: 1; }
+.home-slot-empty-icon {
+  font-size: 56px; color: var(--txt3); font-weight: 200;
+  line-height: 1; margin: 12px 0 8px;
+}
+.home-slot-empty-label {
+  font-family: var(--font-head); font-size: 16px; font-weight: 700;
+  color: var(--txt2); letter-spacing: .08em;
+}
+.home-slot-empty-cta {
+  font-size: 11px; color: var(--txt3); margin-top: 6px;
+}
+.home-slot-season {
+  font-family: var(--font-head);
+  font-size: 28px; font-weight: 800;
+  color: var(--txt);
+  margin-bottom: 12px;
+}
+.home-slot-champ {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(245,200,66,.08);
+  border: 1px solid rgba(245,200,66,.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.home-slot-champ-trophy { font-size: 24px; }
+.home-slot-champ-info { flex: 1; min-width: 0; }
+.home-slot-champ-label {
+  font-size: 9px; letter-spacing: .12em;
+  color: var(--txt3); text-transform: uppercase;
+}
+.home-slot-champ-name {
+  font-weight: 700; font-size: 13px;
+  color: var(--gold);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.home-slot-meta {
+  font-size: 11px; color: var(--txt3);
+  margin-bottom: 12px;
+}
+.home-slot-actions {
+  display: flex; gap: 6px;
+  margin-top: auto;
+}
+.home-slot-actions .btn-primary { flex: 1; }
+.home-footer {
+  font-size: 12px; color: var(--txt3);
+  margin-top: 16px;
+}
+@media (max-width: 720px) {
+  .home-slots { grid-template-columns: 1fr; gap: 14px; }
+  .home-slot { min-height: 180px; }
+  .home-title { font-size: 24px; }
+  .home-star { font-size: 44px; }
+}
+
+/* Small color dot for team rows in group standings */
+.team-color-dot {
+  display: inline-block;
+  width: 4px;
+  height: 16px;
+  background: var(--team-primary, #444);
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: middle;
+  box-shadow: 0 0 6px var(--team-primary, transparent);
 }
