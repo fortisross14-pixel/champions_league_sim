@@ -332,6 +332,21 @@ function showMatchPreview(t1, t2, roundName, onStart) {
       </div>`
   }
 
+  // Build skip buttons depending on phase. Group stage gets both
+  // "Skip Game" (instant) and "Skip Group" (all unplayed matches in
+  // the same group). Knockout matches only get "Skip Game".
+  const isGroupPhase = S.phase === 'groups'
+  let nextMatch = null
+  if (isGroupPhase) nextMatch = (S.groupMatches || []).filter(m => !m.played)[0]
+  const sameGroupLeft = isGroupPhase && nextMatch
+    ? (S.groupMatches || []).filter(m => !m.played && m.gi === nextMatch.gi).length
+    : 0
+
+  const skipButtons = isGroupPhase
+    ? `<button class="btn btn-secondary" onclick="window.skipPreviewedMatch()" title="Sim this match instantly (no playback)">Skip Game ⏭</button>
+       <button class="btn btn-secondary" onclick="window.skipPreviewedGroup()" title="Sim all ${sameGroupLeft} remaining matches in this group">Skip Group ⏭⏭ (${sameGroupLeft})</button>`
+    : `<button class="btn btn-secondary" onclick="window.skipPreviewedMatch()" title="Sim this match instantly (no playback)">Skip Game ⏭</button>`
+
   inner.innerHTML = `
     <div class="playback-card preview-card">
       <div class="playback-header">
@@ -342,8 +357,9 @@ function showMatchPreview(t1, t2, roundName, onStart) {
         <div class="preview-vs">VS</div>
         ${teamBlock(t2, 'right')}
       </div>
-      <div class="playback-actions">
+      <div class="playback-actions" style="flex-wrap:wrap;gap:8px">
         <button class="btn btn-sm" onclick="window.cancelPreview()">Cancel</button>
+        ${skipButtons}
         <button class="btn btn-primary" onclick="window.startPreviewedMatch()">Start Game ▶</button>
       </div>
     </div>`
@@ -358,6 +374,140 @@ window.startPreviewedMatch = function () {
   // Close the preview popup; the match-play function will reopen it
   // for the live playback.
   if (cb) cb()
+}
+
+// Sim the next match instantly (no playback). Works for both group
+// and knockout phases.
+window.skipPreviewedMatch = function () {
+  window._previewOnStart = null
+  const popup = $('match-popup')
+  popup.style.display = 'none'
+
+  if (S.phase === 'groups') {
+    const match = (S.groupMatches || []).find(m => !m.played)
+    if (!match) return
+    const result = playGroupMatch(match)
+    showGroupResultsPopup([result], 'Group Stage', () => {
+      renderGroups()
+      updatePhaseUI()
+      const left = S.groupMatches.filter(m => !m.played).length
+      $('btn-main').textContent = left > 0 ? `▶ Play Next (${left} left)` : '▶ Complete Group Stage'
+    })
+  } else if (S.phase === 'knockout') {
+    const round = S.knockoutRounds[S.knockoutRounds.length - 1]
+    if (!round) return
+    const match = round.matches.find(m => !m.played)
+    if (!match) return
+    const result = playKnockoutMatch(match)
+    showGroupResultsPopup([result], round.name, () => {
+      renderBracket()
+      updatePhaseUI()
+      const left = round.matches.filter(m => !m.played).length
+      $('btn-main').textContent = left > 0 ? `▶ Play Next (${left} left)` : '▶ Advance Round'
+    })
+  }
+}
+
+// Sim every remaining match in the next match's group, all at once.
+window.skipPreviewedGroup = function () {
+  window._previewOnStart = null
+  const popup = $('match-popup')
+  popup.style.display = 'none'
+  if (S.phase !== 'groups') return
+
+  const nextMatch = (S.groupMatches || []).find(m => !m.played)
+  if (!nextMatch) return
+  const gi = nextMatch.gi
+  const toPlay = (S.groupMatches || []).filter(m => !m.played && m.gi === gi)
+  const results = toPlay.map(m => playGroupMatch(m))
+  showGroupResultsPopup(results, `Group ${S.groups[gi]?.id || ''}`, () => {
+    renderGroups()
+    updatePhaseUI()
+    const left = S.groupMatches.filter(m => !m.played).length
+    $('btn-main').textContent = left > 0 ? `▶ Play Next (${left} left)` : '▶ Complete Group Stage'
+  })
+}
+
+// Show a multi-match results popup with a vertical tab list of all
+// the games on the left and the selected game's scoreboard on the
+// right. For a single match, it just shows the one result.
+function showGroupResultsPopup(results, roundName, onClose) {
+  const popup = $('match-popup')
+  const inner = $('match-popup-inner')
+  popup.classList.add('match-popup-modal')
+  popup.style.display = 'flex'
+
+  let selected = 0
+  const render = () => {
+    const r = results[selected]
+    const tabs = results.map((res, i) => {
+      const winner = res.g1 > res.g2 ? res.t1 : res.g2 > res.g1 ? res.t2 : null
+      const winnerName = winner ? winner.name : 'Draw'
+      return `<div class="group-result-tab ${i === selected ? 'active' : ''}" onclick="window.selectGroupResult(${i})">
+        <div class="group-result-tab-num">M${i + 1}</div>
+        <div class="group-result-tab-score">${res.g1}–${res.g2}</div>
+        <div class="group-result-tab-winner">${winnerName.slice(0, 12)}</div>
+      </div>`
+    }).join('')
+
+    const t1Colors = r.t1.colors || ['#444','#fff']
+    const t2Colors = r.t2.colors || ['#444','#fff']
+    // Pull goal events from the match timeline.
+    const goals = (r.timeline || []).filter(ev => ev.team)
+    const goals1 = goals.filter(g => g.team === 1)
+    const goals2 = goals.filter(g => g.team === 2)
+    const scorerLine = arr => arr.length
+      ? arr.map(g => `${g.scorerName || (g.team === 1 ? r.t1.name : r.t2.name)} ${g.minute}'`).join(', ')
+      : '<span class="muted">—</span>'
+
+    inner.innerHTML = `
+      <div class="playback-card group-results-card">
+        <div class="playback-header">
+          <div class="playback-round">${roundName.toUpperCase()} — RESULTS</div>
+          <div class="playback-clock final">FT</div>
+        </div>
+        <div class="group-results-body">
+          ${results.length > 1 ? `<div class="group-results-tabs">${tabs}</div>` : ''}
+          <div class="group-results-detail">
+            <div class="playback-score-row">
+              <div class="playback-team-block" style="--team-primary:${t1Colors[0]};--team-secondary:${t1Colors[1]}">
+                <div class="playback-team-stripe"></div>
+                <div class="playback-team-inner">
+                  <div class="playback-team-name">${flag(r.t1.cc)} ${r.t1.name}</div>
+                </div>
+              </div>
+              <div class="playback-score">
+                <span class="${r.g1 > r.g2 ? 'lead' : ''}">${r.g1}</span>
+                <span class="dash">–</span>
+                <span class="${r.g2 > r.g1 ? 'lead' : ''}">${r.g2}</span>
+              </div>
+              <div class="playback-team-block right" style="--team-primary:${t2Colors[0]};--team-secondary:${t2Colors[1]}">
+                <div class="playback-team-inner">
+                  <div class="playback-team-name">${r.t2.name} ${flag(r.t2.cc)}</div>
+                </div>
+                <div class="playback-team-stripe"></div>
+              </div>
+            </div>
+            <div class="group-results-scorers">
+              <div><strong style="color:var(--blue2)">${r.t1.name}:</strong> ${scorerLine(goals1)}</div>
+              <div><strong style="color:var(--blue2)">${r.t2.name}:</strong> ${scorerLine(goals2)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="playback-actions">
+          <button class="btn btn-primary" onclick="window.closeGroupResultsPopup()">Continue</button>
+        </div>
+      </div>`
+    parseEmoji(inner)
+  }
+  window.selectGroupResult = function(i) { selected = i; render() }
+  window.closeGroupResultsPopup = function() {
+    popup.style.display = 'none'
+    window.selectGroupResult = null
+    window.closeGroupResultsPopup = null
+    if (onClose) onClose()
+  }
+  render()
 }
 window.cancelPreview = function () {
   window._previewOnStart = null

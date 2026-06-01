@@ -11,15 +11,19 @@ export const tierLabel = t => ({generational:'Generational',legendary:'Legendary
 export const tierColor = t => ({generational:'#e91e63',legendary:'#ff9800',epic:'#9c27b0',rare:'#2196f3',uncommon:'#4caf50',common:'#6a7a9a'})[t]||'#6a7a9a'
 
 // Rarity distribution: 0.5% generational, 5% legendary (was 2%),
-// 6% epic, 11% rare, 19% uncommon, 58.5% common.
+// Tier probabilities for a fresh-spawned star. Tuned so a world of
+// ~80 teams gets 1-2 Generationals, 3-4 Legendaries, 8-10 Epics,
+// 8-10 Rares, ~25 Uncommons, and the remainder Common.
+//   Generational 2%, Legendary 4%, Epic 12%, Rare 12%,
+//   Uncommon 30%, Common 40%.
 // Generational has a hard cap of 2 in the world — see genStar.
 function rollTier() {
   const r = Math.random()
-  if (r < 0.005) return 'generational'
-  if (r < 0.055) return 'legendary'
-  if (r < 0.115) return 'epic'
-  if (r < 0.225) return 'rare'
-  if (r < 0.415) return 'uncommon'
+  if (r < 0.02) return 'generational'
+  if (r < 0.06) return 'legendary'
+  if (r < 0.18) return 'epic'
+  if (r < 0.30) return 'rare'
+  if (r < 0.60) return 'uncommon'
   return 'common'
 }
 
@@ -1099,19 +1103,15 @@ export function runLocalLeagues() {
     const teams = LEAGUE_TEAMS[L.id] || []
     const scored = teams.map(t => {
       const at = allTeamMap[t.id] || t
-      const stars = at.stars || []
-      const tierWeight = { legendary:8, epic:5, rare:3, uncommon:1, common:0 }
-      const starBoost = stars.reduce((s,x) => s + (tierWeight[x.tier]||0), 0)
-      const coach = S.coaches?.find(c => c.teamId === at.id)
-      const coachBoost = tierWeight[coach?.tier] || 0
-      // Use this season's actual overall (drift around money center)
-      // as the foundation, NOT the raw target — so a team that has a
-      // down year really does play like a down-year team.
-      const seasonOv = at.currentOverall || (41 + 4 * effectiveMoney(at)) || 70
-      const score = seasonOv
+      // Use the real effective overall — same calc the match engine
+      // uses — so bonuses from stars/coach/GM count toward league
+      // table position, not just the base team stats.
+      const eff = getEffStats(at)
+      const effOv = Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
+      // Add some season-to-season noise so the league isn't fully
+      // deterministic (form, injuries, motivation).
+      const score = effOv
         + Math.round(gaussRand(6))
-        + starBoost
-        + coachBoost
         + (histPts(t.id) * 0.3)
       return {
         team: t,
