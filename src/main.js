@@ -429,8 +429,9 @@ window.skipPreviewedGroup = function () {
 }
 
 // Show a multi-match results popup with a vertical tab list of all
-// the games on the left and the selected game's scoreboard on the
-// right. For a single match, it just shows the one result.
+// the games on the left and the full completed-game view on the
+// right. For a single match, it just shows the one result with no
+// tabs.
 function showGroupResultsPopup(results, roundName, onClose) {
   const popup = $('match-popup')
   const inner = $('match-popup-inner')
@@ -450,52 +451,64 @@ function showGroupResultsPopup(results, roundName, onClose) {
       </div>`
     }).join('')
 
-    const t1Colors = r.t1.colors || ['#444','#fff']
-    const t2Colors = r.t2.colors || ['#444','#fff']
-    // Pull goal events from the match timeline.
-    const goals = (r.timeline || []).filter(ev => ev.team)
-    const goals1 = goals.filter(g => g.team === 1)
-    const goals2 = goals.filter(g => g.team === 2)
-    const scorerLine = arr => arr.length
-      ? arr.map(g => `${g.scorerName || (g.team === 1 ? r.t1.name : r.t2.name)} ${g.minute}'`).join(', ')
-      : '<span class="muted">—</span>'
+    const t1 = r.t1, t2 = r.t2
+    const star1 = t1.star, star2 = t2.star
+    const t1Colors = t1.colors || ['#444','#fff']
+    const t2Colors = t2.colors || ['#444','#fff']
+    const events = (r.timeline || []).filter(ev => ev.team && !ev.et)
 
-    inner.innerHTML = `
-      <div class="playback-card group-results-card">
+    // Same playback card as a freshly completed match (header,
+    // colored team blocks, goal events list, full final summary
+    // with possession bar / shots / star ratings).
+    const matchCard = `
+      <div class="playback-card group-result-card-inner">
         <div class="playback-header">
-          <div class="playback-round">${roundName.toUpperCase()} — RESULTS</div>
+          <div class="playback-round">${roundName.toUpperCase()} ${results.length > 1 ? `· MATCH ${selected + 1}/${results.length}` : ''}</div>
           <div class="playback-clock final">FT</div>
         </div>
-        <div class="group-results-body">
-          ${results.length > 1 ? `<div class="group-results-tabs">${tabs}</div>` : ''}
-          <div class="group-results-detail">
-            <div class="playback-score-row">
-              <div class="playback-team-block" style="--team-primary:${t1Colors[0]};--team-secondary:${t1Colors[1]}">
-                <div class="playback-team-stripe"></div>
-                <div class="playback-team-inner">
-                  <div class="playback-team-name">${flag(r.t1.cc)} ${r.t1.name}</div>
-                </div>
-              </div>
-              <div class="playback-score">
-                <span class="${r.g1 > r.g2 ? 'lead' : ''}">${r.g1}</span>
-                <span class="dash">–</span>
-                <span class="${r.g2 > r.g1 ? 'lead' : ''}">${r.g2}</span>
-              </div>
-              <div class="playback-team-block right" style="--team-primary:${t2Colors[0]};--team-secondary:${t2Colors[1]}">
-                <div class="playback-team-inner">
-                  <div class="playback-team-name">${r.t2.name} ${flag(r.t2.cc)}</div>
-                </div>
-                <div class="playback-team-stripe"></div>
-              </div>
-            </div>
-            <div class="group-results-scorers">
-              <div><strong style="color:var(--blue2)">${r.t1.name}:</strong> ${scorerLine(goals1)}</div>
-              <div><strong style="color:var(--blue2)">${r.t2.name}:</strong> ${scorerLine(goals2)}</div>
+        <div class="playback-score-row">
+          <div class="playback-team-block" style="--team-primary:${t1Colors[0]};--team-secondary:${t1Colors[1]}">
+            <div class="playback-team-stripe"></div>
+            <div class="playback-team-inner">
+              <div class="playback-team-name">${flag(t1.cc)} ${t1.name}</div>
+              ${star1 ? `<div class="playback-team-star" style="color:${tierColor(star1.tier)}">⭐ ${star1.name} (${star1.pos})</div>` : ''}
             </div>
           </div>
+          <div class="playback-score">
+            <span class="${r.g1 > r.g2 ? 'lead' : ''}">${r.g1}</span>
+            <span class="dash">–</span>
+            <span class="${r.g2 > r.g1 ? 'lead' : ''}">${r.g2}</span>
+          </div>
+          <div class="playback-team-block right" style="--team-primary:${t2Colors[0]};--team-secondary:${t2Colors[1]}">
+            <div class="playback-team-inner">
+              <div class="playback-team-name">${t2.name} ${flag(t2.cc)}</div>
+              ${star2 ? `<div class="playback-team-star" style="color:${tierColor(star2.tier)}">⭐ ${star2.name} (${star2.pos})</div>` : ''}
+            </div>
+            <div class="playback-team-stripe"></div>
+          </div>
         </div>
-        <div class="playback-actions">
-          <button class="btn btn-primary" onclick="window.closeGroupResultsPopup()">Continue</button>
+        <div class="playback-events">
+          ${events.length === 0
+            ? '<div class="playback-event muted">No goals.</div>'
+            : events.map(ev => `
+                <div class="playback-event ${ev.team === 1 ? 'left' : 'right'} ${ev.isStar ? 'star' : ''}">
+                  <span class="event-min">${ev.minute}'</span>
+                  <span class="event-icon">⚽</span>
+                  <span class="event-name">${ev.scorerName}</span>
+                  ${ev.team === 1 ? '' : '<span class="event-side">› ' + t2.name + '</span>'}
+                </div>`).join('')}
+        </div>
+        ${renderFinalSummary(r)}
+      </div>`
+
+    inner.innerHTML = `
+      <div class="group-results-wrap">
+        ${results.length > 1 ? `<div class="group-results-tabs">${tabs}</div>` : ''}
+        <div class="group-results-detail">
+          ${matchCard}
+          <div class="playback-actions" style="margin-top:8px">
+            <button class="btn btn-primary" onclick="window.closeGroupResultsPopup()">Continue</button>
+          </div>
         </div>
       </div>`
     parseEmoji(inner)
