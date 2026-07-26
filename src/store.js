@@ -1,5 +1,6 @@
 // ── Game State Store ─────────────────────────────────────────
 import { ALL_TEAMS } from './data/teams.js'
+import { HISTORIC_LEGENDS } from './data/legends.js'
 
 const DB_NAME = 'cls', DB_VER = 1, STORE = 'saves', AUTO_KEY = 'autosave'
 
@@ -37,6 +38,8 @@ export async function getSlotSummaries() {
       out.push({
         key, exists: true,
         season: seasonNum,
+        year: d.year || (d.era === 'european_cup' ? 1955 + seasonNum : 2025 + seasonNum - 1),
+        era: d.era || 'champions_league',
         championName: lastHist?.championName || null,
         championCC: lastHist?.cc || null,
         savedAt: d.savedAt || null,
@@ -114,6 +117,12 @@ export async function dbAll() {
 // shape so loading a save can never leak stale fields.
 const INITIAL_STATE = {
   season: 1,
+  year: 1956,
+  era: 'european_cup', // european_cup | champions_league
+  eraTransitionYear: null,
+  pendingEraTransition: false,
+  namedLegendsIntroduced: [],
+  namedLegendSchedule: {},
   phase: 'idle', // idle | stats | market | qualifying | groups | knockout | done
   teams: [],
   groups: [],
@@ -135,6 +144,9 @@ const INITIAL_STATE = {
   teamStats: null,
   localLeagueResults: null,
   lastMarket: null,
+  transferHistory: [],
+  financeHistory: [],
+  freeAgents: { stars: [], coaches: [] },
   seasonAwards: {},
   nextId: 1,
 }
@@ -152,7 +164,7 @@ function resetState() {
 // Bump this whenever the save-state shape changes in a
 // breaking way. importSave() warns when it sees an older version
 // so users know why their save might not look right.
-const SAVE_VERSION = 2
+const SAVE_VERSION = 5
 
 export function buildSave() {
   // Deep clone of the live S — captures every field present at
@@ -247,16 +259,73 @@ function isLegacySave(data) {
   return ('base' in sample) && !('money' in sample)
 }
 
+
+// Bring older compatible saves forward without discarding a long-running
+// universe. The previous economy stored tiny balances (where 20-30 was huge),
+// so balances are translated to the new millions scale once. New historical
+// collections start empty and fill from the next offseason onward.
+function migrateSaveData(data) {
+  if (!data || typeof data !== 'object') return data
+  if (!Array.isArray(data.transferHistory)) data.transferHistory = []
+  if (!Array.isArray(data.financeHistory)) data.financeHistory = []
+  // Saves created before the historical-era update were already modern
+  // Champions League universes. Keep them modern instead of rewinding them,
+  // and do not inject fifty historical players into an established career.
+  const legacyModernUniverse = !data.era
+  if (legacyModernUniverse) data.era = 'champions_league'
+  if (typeof data.year !== 'number') data.year = 2025 + Math.max(0, (data.season || 1) - 1)
+  if (!Array.isArray(data.namedLegendsIntroduced)) {
+    data.namedLegendsIntroduced = legacyModernUniverse ? HISTORIC_LEGENDS.map(x => x.key) : []
+  }
+  if (!data.namedLegendSchedule || typeof data.namedLegendSchedule !== 'object') data.namedLegendSchedule = {}
+  if (!('eraTransitionYear' in data)) data.eraTransitionYear = data.era === 'champions_league' ? data.year : null
+  if (typeof data.pendingEraTransition !== 'boolean') data.pendingEraTransition = false
+  if (Array.isArray(data.history)) {
+    data.history.forEach(h => {
+      if (typeof h.year !== 'number') h.year = data.year - Math.max(0, (data.season || 1) - (h.season || 1))
+      if (!h.era) h.era = data.era
+    })
+  }
+  if (!data.freeAgents || typeof data.freeAgents !== 'object') data.freeAgents = { stars: [], coaches: [] }
+  if (!Array.isArray(data.freeAgents.stars)) data.freeAgents.stars = []
+  if (!Array.isArray(data.freeAgents.coaches)) data.freeAgents.coaches = []
+  if (Array.isArray(data.allTeams)) {
+    data.allTeams.forEach(team => {
+      if (typeof team.treasury !== 'number') {
+        const legacy = typeof team.cashOnHand === 'number' ? team.cashOnHand : 0
+        team.treasury = legacy > 0 ? Math.round(legacy * 80) / 10 : 0
+      }
+      team.cashOnHand = Math.round((team.treasury || 0) * 10) / 10
+    })
+  }
+  data.saveVersion = Math.max(Number(data.saveVersion) || 0, 5)
+  return data
+}
+
 // Re-inject static team data (colors, etc.) from data/teams.js onto
 // the loaded save. Lets us add cosmetic fields without breaking
 // existing saves.
 function mergeStaticTeamData(data) {
   if (!data?.allTeams) return
   const byId = new Map(ALL_TEAMS.map(t => [t.id, t]))
+  const existing = new Set(data.allTeams.map(t => t.id))
   data.allTeams.forEach(t => {
     const src = byId.get(t.id)
     if (!src) return
     if (!t.colors && src.colors) t.colors = src.colors
+  })
+  // New static clubs introduced by an update join compatible saves as
+  // empty squads; the next offseason supplies their manager and players.
+  ALL_TEAMS.forEach(src => {
+    if (existing.has(src.id)) return
+    data.allTeams.push({ ...src, stars: [], coachId: null, treasury: 0, cashOnHand: 0 })
+    data.teamStats = data.teamStats || {}
+    data.teamStats[src.id] = {
+      id:src.id, name:src.name, cc:src.cc,
+      played:0, wins:0, draws:0, losses:0, goalsFor:0, goalsAgainst:0,
+      participations:0, titles:0, finals:0, semiFinals:0,
+      quarterFinals:0, roundOf16:0, localTitles:0,
+    }
   })
 }
 
@@ -272,6 +341,7 @@ export async function loadGame() {
       return false
     }
     resetState()
+    migrateSaveData(d)
     mergeStaticTeamData(d)
     Object.assign(S, d)
     rehydrateRefs()
@@ -307,6 +377,7 @@ export async function loadSlot(key) {
     throw new Error('This save predates the v6 economy update. Please start a new game.')
   }
   resetState()
+  migrateSaveData(d)
   mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
@@ -361,6 +432,7 @@ export async function restartSeason() {
   const d = await dbLoad(PRE_SEASON_KEY)
   if (!d) throw new Error('No pre-season snapshot found')
   resetState()
+  migrateSaveData(d)
   mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
@@ -374,6 +446,7 @@ export async function restartTournament() {
   const d = await dbLoad(PRE_TOURNAMENT_KEY)
   if (!d) throw new Error('No pre-tournament snapshot found')
   resetState()
+  migrateSaveData(d)
   mergeStaticTeamData(d)
   Object.assign(S, d)
   rehydrateRefs()
@@ -387,7 +460,7 @@ export function exportSave() {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `cls_save_season${S.season}_${new Date().toISOString().slice(0,10)}.json`
+  a.download = `cls_save_${S.year || S.season}_${new Date().toISOString().slice(0,10)}.json`
   a.click()
   // Free up the blob URL after a moment.
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
@@ -413,6 +486,7 @@ export function importSave(file) {
         // Wipe stale state before applying the loaded data so
         // nothing from the running session can leak through.
         resetState()
+        migrateSaveData(d)
         mergeStaticTeamData(d)
     Object.assign(S, d)
         rehydrateRefs()

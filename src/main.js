@@ -8,7 +8,7 @@ import {
   getSlotSummaries, startFreshInSlot, SLOT_KEYS,
 } from './store.js'
 import {
-  runQualification, drawGroups, initStarsAndCoaches, linkStarsToTeams,
+  runQualification, drawGroups, buildClassicBracket, initStarsAndCoaches, linkStarsToTeams,
   playGroupMatch, buildKnockout, playKnockoutMatch, advanceKnockout,
   runMarket, runTransfers, startNewSeason, runLocalLeagues,
   runStatsUpdate,
@@ -16,24 +16,68 @@ import {
   describeStarSkills, describeCoachSkills, describeGMSkills, getStarSkillData,
   COACH_TRAITS,
   regenStarSkills, regenCoachSkills,
-  annualIncome, baseSpend, teamAnnualSalary, effectiveMoney,
+  annualIncome, baseSpend, baseSquadSalary, operatingCosts,
+  teamAnnualSalary, teamStarSalary, teamCoachSalary, effectiveMoney,
+  playerAge, playerMarketValue, financeSnapshot, currentCalendarYear,
 } from './engine/season.js'
 import { ovr, getEffStats } from './engine/match.js'
 import { COUNTRY_NAME } from './data/players.js'
 import { LEAGUES } from './data/teams.js'
 
 const $ = id => document.getElementById(id)
-const FLAG = {
-  es:'🇪🇸', de:'🇩🇪', it:'🇮🇹', 'gb-eng':'🏴󠁧󠁢󠁥󠁮󠁧󠁿', fr:'🇫🇷', pt:'🇵🇹', nl:'🇳🇱', ru:'🇷🇺',
-  'gb-sct':'🏴󠁧󠁢󠁳󠁣󠁴󠁿', tr:'🇹🇷', gr:'🇬🇷', ua:'🇺🇦',
-  br:'🇧🇷', ar:'🇦🇷', uy:'🇺🇾', mx:'🇲🇽', sn:'🇸🇳', kr:'🇰🇷', ng:'🇳🇬',
-  be:'🇧🇪', ch:'🇨🇭', at:'🇦🇹', ro:'🇷🇴', cz:'🇨🇿', pl:'🇵🇱', no:'🇳🇴', se:'🇸🇪',
-  dk:'🇩🇰', hr:'🇭🇷', hu:'🇭🇺', bg:'🇧🇬', md:'🇲🇩', lv:'🇱🇻', si:'🇸🇮', gi:'🇬🇮',
-  eu:'🇪🇺',
+const FLAG_PATTERNS = {
+  es:{type:'h',c:['#AA151B','#F1BF00','#AA151B'],w:[1,2,1]},
+  de:{type:'h',c:['#000','#DD0000','#FFCE00']}, it:{type:'v',c:['#009246','#fff','#CE2B37']},
+  fr:{type:'v',c:['#0055A4','#fff','#EF4135']}, pt:{type:'v',c:['#046A38','#DA291C'],w:[2,3]},
+  nl:{type:'h',c:['#AE1C28','#fff','#21468B']}, ru:{type:'h',c:['#fff','#0039A6','#D52B1E']},
+  ua:{type:'h',c:['#0057B7','#FFD700']}, tr:{type:'solid',c:['#E30A17'],mark:'crescent'},
+  gr:{type:'stripes',c:['#0D5EAF','#fff']}, br:{type:'solid',c:['#009C3B'],mark:'diamond'},
+  ar:{type:'h',c:['#74ACDF','#fff','#74ACDF'],mark:'sun'}, uy:{type:'stripes',c:['#fff','#5CB8E6']},
+  mx:{type:'v',c:['#006847','#fff','#CE1126']}, sn:{type:'v',c:['#00853F','#FDEF42','#E31B23']},
+  kr:{type:'solid',c:['#fff'],mark:'taegeuk'}, ng:{type:'v',c:['#008751','#fff','#008751']},
+  be:{type:'v',c:['#000','#FFD90C','#EF3340']}, ch:{type:'solid',c:['#D52B1E'],mark:'cross'},
+  at:{type:'h',c:['#ED2939','#fff','#ED2939']}, ro:{type:'v',c:['#002B7F','#FCD116','#CE1126']},
+  cz:{type:'h',c:['#fff','#D7141A'],mark:'triangle'}, pl:{type:'h',c:['#fff','#DC143C']},
+  no:{type:'solid',c:['#BA0C2F'],mark:'nordic-blue'}, se:{type:'solid',c:['#006AA7'],mark:'nordic-yellow'},
+  dk:{type:'solid',c:['#C8102E'],mark:'nordic-white'}, hr:{type:'h',c:['#FF0000','#fff','#171796'],mark:'checker'},
+  hu:{type:'h',c:['#CE2939','#fff','#477050']}, bg:{type:'h',c:['#fff','#00966E','#D62612']},
+  md:{type:'v',c:['#003F87','#FFD200','#CE1126']}, lv:{type:'h',c:['#9E3039','#fff','#9E3039'],w:[2,1,2]},
+  si:{type:'h',c:['#fff','#005DA4','#ED1C24']}, gi:{type:'h',c:['#fff','#DA000C']},
+  'gb-eng':{type:'solid',c:['#fff'],mark:'england'}, 'gb-sct':{type:'solid',c:['#0065BD'],mark:'saltire'},
+  eu:{type:'solid',c:['#003399'],mark:'eu'},
 }
-const flag = cc => `<span class="flag-emoji">${FLAG[cc] || '🏳️'}</span>`
+function flag(cc) {
+  const p = FLAG_PATTERNS[cc] || {type:'solid',c:['#6b7280']}
+  const w=30,h=20, parts=[]
+  if(p.type==='h'){
+    const weights=p.w||p.c.map(()=>1), total=weights.reduce((a,b)=>a+b,0); let y=0
+    p.c.forEach((c,i)=>{const hh=h*weights[i]/total;parts.push(`<rect x="0" y="${y}" width="${w}" height="${hh}" fill="${c}"/>`);y+=hh})
+  } else if(p.type==='v'){
+    const weights=p.w||p.c.map(()=>1), total=weights.reduce((a,b)=>a+b,0); let x=0
+    p.c.forEach((c,i)=>{const ww=w*weights[i]/total;parts.push(`<rect x="${x}" y="0" width="${ww}" height="${h}" fill="${c}"/>`);x+=ww})
+  } else if(p.type==='stripes'){
+    for(let i=0;i<9;i++) parts.push(`<rect x="0" y="${i*h/9}" width="${w}" height="${h/9+0.2}" fill="${p.c[i%2]}"/>`)
+  } else parts.push(`<rect width="${w}" height="${h}" fill="${p.c[0]}"/>`)
+  const m=p.mark
+  if(m==='england') parts.push('<rect x="12" width="6" height="20" fill="#CE1124"/><rect y="7" width="30" height="6" fill="#CE1124"/>')
+  if(m==='saltire') parts.push('<path d="M0 0 L4 0 L30 16 L30 20 L26 20 L0 4Z" fill="#fff"/><path d="M30 0 L26 0 L0 16 L0 20 L4 20 L30 4Z" fill="#fff"/>')
+  if(m?.startsWith('nordic')){const col=m==='nordic-blue'?'#00205B':m==='nordic-yellow'?'#FECC00':'#fff';parts.push(`<rect x="9" width="4" height="20" fill="${col}"/><rect y="8" width="30" height="4" fill="${col}"/>`)}
+  if(m==='cross') parts.push('<rect x="12" y="4" width="6" height="12" fill="#fff"/><rect x="8" y="7" width="14" height="6" fill="#fff"/>')
+  if(m==='crescent') parts.push('<circle cx="13" cy="10" r="6" fill="#fff"/><circle cx="15.5" cy="8.5" r="5" fill="#E30A17"/><circle cx="20" cy="10" r="1.6" fill="#fff"/>')
+  if(m==='diamond') parts.push('<path d="M15 3 L27 10 L15 17 L3 10Z" fill="#FFDF00"/><circle cx="15" cy="10" r="4" fill="#002776"/>')
+  if(m==='sun') parts.push('<circle cx="15" cy="10" r="2.1" fill="#F6B40E"/>')
+  if(m==='taegeuk') parts.push('<path d="M10 10a5 5 0 0 1 10 0a2.5 2.5 0 0 0-5 0a2.5 2.5 0 0 1-5 0" fill="#CD2E3A"/><path d="M20 10a5 5 0 0 1-10 0a2.5 2.5 0 0 0 5 0a2.5 2.5 0 0 1 5 0" fill="#0047A0"/>')
+  if(m==='triangle') parts.push('<path d="M0 0 L12 10 L0 20Z" fill="#11457E"/>')
+  if(m==='checker') parts.push('<rect x="12" y="7" width="6" height="6" fill="#fff" stroke="#D00" stroke-width="1"/>')
+  if(m==='eu'){for(let i=0;i<8;i++){const a=i*Math.PI/4;parts.push(`<circle cx="${15+5*Math.cos(a)}" cy="${10+5*Math.sin(a)}" r="0.8" fill="#FFCC00"/>`)}}
+  return `<span class="flag-svg" title="${COUNTRY_NAME[cc] || cc || ''}"><svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${parts.join('')}</svg></span>`
+}
 const tierBadge = t => `<span class="badge badge-${t}">${tierLabel(t)}</span>`
 const TIER_ORDER = ['generational','legendary','epic','rare','uncommon','common']
+const fmtMoney = n => `$${(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1})}M`
+const gameYear = () => currentCalendarYear()
+const yearForSeason = season => gameYear() - Math.max(0, (S.season || 1) - (season || 1))
+const historyYear = row => row?.year || yearForSeason(row?.season || S.season || 1)
 
 // Render the team's name as a colored pill (F1-style). Uses the
 // team's two-color scheme: a vertical accent bar on the left + a
@@ -75,13 +119,13 @@ function legendStar(team) {
 // Parse emoji in the given element using Twemoji, which swaps emoji
 // chars for inline SVG/PNG images. Critically, this is what makes
 // flag emoji actually render on Windows (whose system fonts have no
-// flag glyphs). Falls back gracefully if twemoji didn't load.
+// emoji glyphs). Country flags use local inline SVG and do not depend on it.
 let _twemojiUnavailableLogged = false
 function parseEmoji(target) {
   if (typeof window === 'undefined' || !target) return
   if (!window.twemoji) {
     if (!_twemojiUnavailableLogged) {
-      console.warn('[flags] Twemoji failed to load (network/CSP blocked cdnjs.cloudflare.com). Flags will fall back to system fonts; on Windows this means country codes show as text.')
+      console.warn('[emoji] Twemoji failed to load; native system emoji will be used. Country flags remain available as local SVG.')
       _twemojiUnavailableLogged = true
     }
     return
@@ -94,7 +138,7 @@ function parseEmoji(target) {
       className: 'twemoji-img',
     })
   } catch (e) {
-    console.warn('[flags] Twemoji.parse threw:', e)
+    console.warn('[emoji] Twemoji.parse threw:', e)
   }
 }
 
@@ -130,16 +174,22 @@ window.switchTab = function (tab) {
 }
 
 function updatePhaseUI() {
-  $('cur-season').textContent = S.season || 1
+  const classic = S.era === 'european_cup'
+  document.body.classList.toggle('era-classic', classic)
+  $('cur-season').textContent = gameYear()
+  const title = document.querySelector('.header-title')
+  const sub = document.querySelector('.header-sub')
+  if (title) title.textContent = classic ? 'EUROPEAN CUP' : 'CHAMPIONS LEAGUE'
+  if (sub) sub.textContent = classic ? 'THE CHAMPION CLUBS’ ERA' : 'SIMULATOR'
   const btn = $('btn-main')
   const map = {
-    idle:        `▶ Begin Season ${S.season || 1}`,
+    idle:        `▶ Begin ${gameYear()}`,
     stats:       '▶ Open Transfer Market',
     market:      '▶ Run Local Leagues',
-    qualifying:  '▶ Draw Groups',
+    qualifying:  classic ? '▶ Draw European Cup' : '▶ Draw Groups',
     groups:      '▶ Play Next Match',
     knockout:    '▶ Play Next Match',
-    done:        '▶ Start New Season',
+    done:        `▶ Continue to ${gameYear() + 1}`,
   }
   btn.textContent = map[S.phase] || '▶ New Season'
   btn.disabled = false
@@ -147,10 +197,10 @@ function updatePhaseUI() {
     idle:        'Pre-Season',
     stats:       'Stats Update',
     market:      'Transfer Market',
-    qualifying:  'Local Leagues',
+    qualifying:  'Domestic Champions',
     groups:      'Group Stage',
-    knockout:    'Knockout',
-    done:        'Season Complete',
+    knockout:    classic ? 'European Cup Knockout' : 'Knockout',
+    done:        `${gameYear()} Complete`,
   }
   $('phase-label').textContent = phases[S.phase] || ''
   renderPlay()
@@ -192,30 +242,56 @@ window.handleMain = async function () {
     S.phase = 'qualifying'
     await autoSave()
     updatePhaseUI()
-    toast('Local leagues decided! 32 teams qualified.')
+    toast(S.era === 'european_cup' ? 'Domestic champions decided. The final 16 are ready.' : 'Local leagues decided! 32 teams qualified.')
     switchTab('play')
   } else if (p === 'qualifying') {
-    drawGroups()
-    S.phase = 'groups'
-    // RESTART POINT: capture the world right after the draw, before
-    // any match has been played. "Restart Tournament" rolls back
-    // here.
-    await snapshotPreTournament()
-    await autoSave()
-    updatePhaseUI()
-    toast('Groups drawn!')
-    switchTab('groups')
+    if (S.era === 'european_cup') {
+      buildClassicBracket()
+      S.phase = 'knockout'
+      await snapshotPreTournament()
+      await autoSave()
+      updatePhaseUI()
+      toast('The European Cup bracket has been drawn — no seeds, no protection.')
+      magazineSubTab = 'guide'
+      switchTab('magazine')
+    } else {
+      drawGroups()
+      S.phase = 'groups'
+      // RESTART POINT: capture the world right after the draw, before
+      // any match has been played. "Restart Tournament" rolls back
+      // here.
+      await snapshotPreTournament()
+      await autoSave()
+      updatePhaseUI()
+      toast('Groups drawn!')
+      magazineSubTab = 'guide'
+      switchTab('magazine')
+    }
   } else if (p === 'groups') {
     playNextGroupMatch()
   } else if (p === 'knockout') {
     playNextKnockoutMatch()
   } else if (p === 'done') {
+    const enterModernEra = !!S.pendingEraTransition
     startNewSeason()
+    if (enterModernEra) {
+      S.era = 'champions_league'
+      S.pendingEraTransition = false
+    }
     await autoSave()
     updatePhaseUI()
     renderPlay()
-    toast(`Season ${S.season} begins!`)
+    toast(`${gameYear()} begins!`)
   }
+}
+
+window.advanceToChampionsLeagueEra = async function () {
+  if (S.era !== 'european_cup' || S.pendingEraTransition) return
+  S.pendingEraTransition = true
+  S.eraTransitionYear = gameYear() + 1
+  await autoSave()
+  renderPlay()
+  toast(`The Champions League era will begin in ${S.eraTransitionYear}.`)
 }
 
 // ── Group stage ───────────────────────────────────────────────
@@ -785,7 +861,7 @@ window.closePlayback = function () {
 // MAGAZINE & TRANSFER REVEAL
 // ─────────────────────────────────────────────────────────────
 function marketHeadlineMove() {
-  const moves = (S.lastMarket || []).filter(m => ['transfer','fa_sign','renew','retirement'].includes(m.phase) && m.kind !== 'team')
+  const moves = (S.lastMarket || []).filter(m => ['transfer','fa_sign','renew','retirement','historic_debut'].includes(m.phase) && m.kind !== 'team')
   const tierRank = { generational:6, legendary:5, epic:4, rare:3, uncommon:2, common:1 }
   return [...moves].sort((a,b) => {
     const tr = (tierRank[b.tier]||0) - (tierRank[a.tier]||0)
@@ -799,6 +875,7 @@ function transferHeadline(m) {
   if (m.phase === 'retirement') return `${m.name} closes the book on a memorable career.`
   if (m.phase === 'renew') return `${m.name} rejects the market and commits to ${m.to}.`
   if (m.phase === 'fa_sign') return `${m.to} win the race for free agent ${m.name}.`
+  if (m.phase === 'historic_debut') return `${m.name} arrives — a new name with the potential to define an era.`
   return `${m.to} land ${m.name} in the deal of the summer.`
 }
 
@@ -806,15 +883,15 @@ function buildMagazineStories() {
   const stories = []
   const lead = marketHeadlineMove()
   if (lead) stories.push({ kicker:'TRANSFER EXCLUSIVE', icon:'🚨', title:transferHeadline(lead), body: lead.phase === 'transfer'
-    ? `${lead.from} receive $${lead.saleValue||lead.signFee||0}M, while ${lead.to} add a ${tierLabel(lead.tier).toLowerCase()} ${lead.pos || 'star'} on a ${lead.contractYears||'?'}-year deal. The balance of power may have shifted before a ball is kicked.`
-    : `${lead.name} becomes one of the defining names of Season ${S.season}'s offseason.`, tone:'lead' })
+    ? `${lead.from} receive ${fmtMoney(lead.saleValue||lead.signFee||0)}, while ${lead.to} add a ${tierLabel(lead.tier).toLowerCase()} ${lead.pos || 'star'} on a ${lead.contractYears||'?'}-year deal. The balance of power may have shifted before a ball is kicked.`
+    : `${lead.name} becomes one of the defining names of ${gameYear()}'s offseason.`, tone:'lead' })
 
   const transfers=(S.lastMarket||[]).filter(m=>m.phase==='transfer')
   if (transfers.length) {
     const spenders={}
     transfers.forEach(m=>spenders[m.to]=(spenders[m.to]||0)+(m.signFee||0))
     const top=Object.entries(spenders).sort((a,b)=>b[1]-a[1])[0]
-    if(top) stories.push({kicker:'MARKET WATCH',icon:'💰',title:`${top[0]} are the summer's biggest buyers`,body:`${transfers.length} permanent transfers were completed. ${top[0]} led the spending with $${top[1]}M in fees.`,tone:'market'})
+    if(top) stories.push({kicker:'MARKET WATCH',icon:'💰',title:`${top[0]} are the summer's biggest buyers`,body:`${transfers.length} permanent transfers were completed. ${top[0]} led the spending with ${fmtMoney(top[1])} in fees.`,tone:'market'})
   }
 
   const leagues=Object.values(S.localLeagueResults||{})
@@ -836,42 +913,199 @@ function buildMagazineStories() {
   return stories
 }
 
+let magazineSubTab = 'front'
+window.setMagazineSubTab = function(k) { magazineSubTab = k; renderMagazine(); parseEmoji(document.body) }
+
+function premiumRank(tier) {
+  return ({ generational:6, legendary:5, epic:4, rare:3, uncommon:2, common:1 })[tier] || 0
+}
+function effectiveTeamOverall(team) {
+  const eff = getEffStats(team)
+  return Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
+}
+function starRoomScore(team) {
+  return (team.stars || []).reduce((sum, star) => {
+    const skill = Object.values(star.statBonus || {}).reduce((a,b) => a + (Number(b)||0), 0)
+    return sum + premiumRank(star.tier) * 35 + skill
+  }, 0)
+}
+function preseasonContenders() {
+  const teams = [...(S.teams || [])]
+  if (!teams.length) return []
+  const reasons = new Map()
+  const selected = []
+  const add = (team, reason) => {
+    if (!team || selected.some(x => x.id === team.id)) return
+    selected.push(team)
+    reasons.set(team.id, [reason])
+  }
+  const addReason = (team, reason) => {
+    if (!team) return
+    const arr = reasons.get(team.id) || []
+    if (!arr.includes(reason)) arr.push(reason)
+    reasons.set(team.id, arr)
+  }
+
+  const last = [...(S.history || [])].reverse()[0]
+  const defending = teams.find(t => t.id === last?.champion)
+  add(defending, 'defending')
+
+  const byOverall = [...teams].sort((a,b) => effectiveTeamOverall(b) - effectiveTeamOverall(a))
+  byOverall.slice(0,2).forEach((team, index) => {
+    if (selected.some(x => x.id === team.id)) addReason(team, index === 0 ? 'highest' : 'elite')
+    else add(team, index === 0 ? 'highest' : 'elite')
+  })
+  const starStudded = [...teams].sort((a,b) => starRoomScore(b) - starRoomScore(a))[0]
+  if (selected.some(x => x.id === starStudded?.id)) addReason(starStudded, 'stars')
+  else add(starStudded, 'stars')
+  for (const team of byOverall) {
+    if (selected.length >= 4) break
+    add(team, 'form')
+  }
+
+  return selected.slice(0,4).map(team => ({ team, reasons:reasons.get(team.id) || [] }))
+}
+function contenderNarrative(team, reasons) {
+  const bits = []
+  if (reasons.includes('defending')) bits.push(`${team.name} lifted the trophy last year and now face the harder task: doing it again.`)
+  if (reasons.includes('highest')) bits.push(`They enter as the highest-rated side in Europe and the narrow preseason favorite.`)
+  else if (reasons.includes('elite')) bits.push(`Their complete team rating places them among the two strongest squads in the field.`)
+  if (reasons.includes('stars')) bits.push(`No qualified club can match the concentrated quality of their star room.`)
+  if (!bits.length) bits.push(`Their balance, recent strength and tournament pedigree make them a genuine threat.`)
+  return bits.join(' ')
+}
+function clickableStar(star) {
+  return `<button class="guide-person" onclick="window.openStarDetail('${star.id}')">${tierBadge(star.tier)} <strong>${star.name}</strong><span>${star.pos}</span></button>`
+}
+function contenderCard(item, index) {
+  const { team, reasons } = item
+  const coach = team.coach
+  return `<article class="guide-contender" style="--club-a:${team.colors?.[0]||'#777'};--club-b:${team.colors?.[1]||'#eee'}">
+    <div class="guide-rank">${index + 1}</div>
+    <div class="guide-team-top"><div>${teamPill(team)}</div><div class="guide-ovr">${effectiveTeamOverall(team)}<small>OVR</small></div></div>
+    <p>${contenderNarrative(team,reasons)}</p>
+    <div class="guide-label">Stars</div><div class="guide-people">${(team.stars || []).map(clickableStar).join('') || '<span class="muted">No named stars</span>'}</div>
+    <div class="guide-label">Coach</div>${coach ? `<button class="guide-person coach" onclick="window.openCoachDetail('${coach.id}')">${tierBadge(coach.tier)} <strong>${coach.name}</strong><span>${coach.trait?.name || 'Head coach'}</span></button>` : '<span class="muted">No coach assigned</span>'}
+  </article>`
+}
+
+function careerGoalsFor(star) {
+  let total = 0
+  ;(S.history || []).forEach(h => {
+    const rec = (h.stars || []).find(x => x.id === star.id)
+    if (rec) total += rec.goals || 0
+  })
+  total += star.goals || 0
+  return total
+}
+function allTimeGoalTable() {
+  const totals = new Map()
+  ;(S.history || []).forEach(h => (h.stars || []).forEach(rec => totals.set(rec.id, (totals.get(rec.id)||0) + (rec.goals||0))))
+  ;(S.teams || []).flatMap(t => t.stars || []).forEach(star => totals.set(star.id, (totals.get(star.id)||0) + (star.goals||0)))
+  return [...totals.entries()].sort((a,b) => b[1]-a[1])
+}
+function playerWatchNarrative(star) {
+  const careerYear = (S.season || 1) - (star.season || 1)
+  const lastYear = careerYear >= (star.lifespan || 9) - 1
+  const firstYear = careerYear <= 0
+  const titles = star.medals?.gold || 0
+  const goals = careerGoalsFor(star)
+  const leaders = allTimeGoalTable()
+  const leader = leaders[0]
+  const gap = leader && leader[0] !== star.id ? leader[1] - goals + 1 : null
+  if (lastYear && titles === 0) return `Last chance to grab the European title that has escaped ${star.name}'s entire career.`
+  if (lastYear && titles > 0) return `${star.name} wants one more European Cup before retirement closes the story.`
+  if (gap != null && gap > 0 && gap <= 10) return `${star.name} needs ${gap} goal${gap===1?'':'s'} to become the leading scorer in tournament history.`
+  if (leader?.[0] === star.id && goals > 0) return `${star.name} begins the campaign defending the all-time scoring lead with ${goals} goals.`
+  if (firstYear) return `A first European campaign for one of football's most exciting new names.`
+  if (titles === 0) return `Elite ability, but still no European crown — this season could define the career.`
+  return `${titles} title${titles===1?'':'s'} already won, and the appetite for another has not disappeared.`
+}
+
+function renderPreseasonGuide() {
+  if (!(S.teams || []).length || ['idle','stats','market','qualifying'].includes(S.phase)) {
+    return `<div class="guide-empty"><div>PRE-SEASON GUIDE</div><p>The guide publishes immediately after the European draw, once the full field is known.</p></div>`
+  }
+  const contenders = preseasonContenders()
+  const contenderIds = new Set(contenders.map(x => x.team.id))
+  const qualifiedIds = new Set((S.teams || []).map(t => t.id))
+  const keyMoves = (S.lastMarket || []).filter(m =>
+    ['transfer','fa_sign'].includes(m.phase) &&
+    ['generational','legendary','epic'].includes(m.tier) &&
+    qualifiedIds.has(m.toId)
+  ).sort((a,b) => premiumRank(b.tier)-premiumRank(a.tier) || (b.signFee||0)-(a.signFee||0))
+  const keyIds = new Set(keyMoves.map(m => m.star?.id).filter(Boolean))
+  const watchers = (S.teams || []).flatMap(team => (team.stars || []).map(star => ({star,team})))
+    .filter(x => ['generational','legendary','epic'].includes(x.star.tier) && !keyIds.has(x.star.id))
+    .sort((a,b) => {
+      const aOutside = contenderIds.has(a.team.id) ? 0 : 1
+      const bOutside = contenderIds.has(b.team.id) ? 0 : 1
+      const aEdge = ((S.season||1)-(a.star.season||1) <= 0 || (S.season||1)-(a.star.season||1) >= (a.star.lifespan||9)-1) ? 1 : 0
+      const bEdge = ((S.season||1)-(b.star.season||1) <= 0 || (S.season||1)-(b.star.season||1) >= (b.star.lifespan||9)-1) ? 1 : 0
+      return bEdge-aEdge || bOutside-aOutside || premiumRank(b.star.tier)-premiumRank(a.star.tier)
+    }).slice(0,10)
+
+  return `<section class="preseason-guide">
+    <div class="guide-hero"><div class="mag-kicker">SPECIAL EDITION · ${gameYear()}</div><h1>${S.era==='european_cup'?'THE EUROPEAN CUP':'THE CHAMPIONS LEAGUE'} PREVIEW</h1><p>Four contenders, the moves that changed the field, and the careers carrying the weight of history.</p></div>
+    <div class="sec">TOP 4 CONTENDERS</div><div class="guide-contender-grid">${contenders.map(contenderCard).join('')}</div>
+    <div class="sec">KEY SIGNINGS</div>
+    ${keyMoves.length ? `<div class="guide-signings">${keyMoves.map(m => {
+      const seller=(S.allTeams||[]).find(t=>t.id===m.fromId), buyer=(S.allTeams||[]).find(t=>t.id===m.toId)
+      const value=m.star ? playerMarketValue(m.star, seller || buyer, m.happiness ?? 65, S.season) : (m.signFee||0)
+      return `<article class="guide-signing" style="--club-a:${buyer?.colors?.[0]||'#777'}"><div>${tierBadge(m.tier)} <button onclick="window.openStarDetail('${m.star?.id||''}')">${m.name}</button></div><div class="guide-transfer-route">${m.from||'Free agency'} → <strong>${m.to}</strong></div><div class="guide-money"><span>${fmtMoney(m.signFee||0)} cost</span><span>${fmtMoney(value)} value</span></div></article>`
+    }).join('')}</div>` : '<div class="empty">No Epic, Legendary or Generational signing reached this season’s field.</div>'}
+    <div class="sec">OTHER PLAYERS TO WATCH</div>
+    <div class="watch-grid">${watchers.map(({star,team}) => `<article class="watch-card"><div class="watch-head">${tierBadge(star.tier)} <button onclick="window.openStarDetail('${star.id}')">${star.name}</button></div><div class="watch-team">${flag(team.cc)} ${team.name} · ${star.pos} · ${careerGoalsFor(star)} career goals</div><p>${playerWatchNarrative(star)}</p></article>`).join('') || '<div class="empty">The premium watch list will grow as stars qualify.</div>'}</div>
+  </section>`
+}
+
 function renderMagazine() {
   const el=$('tab-magazine'); if(!el) return
   const stories=buildMagazineStories()
   const lead=stories[0]
+  const guideReady = (S.teams || []).length && !['idle','stats','market','qualifying'].includes(S.phase)
   el.innerHTML=`
     <div class="magazine-masthead">
-      <div><div class="magazine-name">EUROPE TODAY</div><div class="magazine-date">SEASON ${S.season} · THE CHAMPIONS LEAGUE WORLD</div></div>
+      <div><div class="magazine-name">EUROPE TODAY</div><div class="magazine-date">${gameYear()} · ${S.era==='european_cup'?'THE EUROPEAN CUP WORLD':'THE CHAMPIONS LEAGUE WORLD'}</div></div>
       <div class="magazine-edition">DAILY<br>EDITION</div>
     </div>
-    ${lead ? `<article class="mag-lead"><div class="mag-kicker">${lead.icon} ${lead.kicker}</div><h1>${lead.title}</h1><p>${lead.body}</p></article>` : `<div class="empty">Begin the season to create the first edition.</div>`}
-    <div class="mag-story-grid">${stories.slice(1).map(x=>`<article class="mag-story mag-${x.tone}"><div class="mag-kicker">${x.icon} ${x.kicker}</div><h2>${x.title}</h2><p>${x.body}</p></article>`).join('')}</div>`
+    <div class="sub-tab-row magazine-tab-row">
+      <button class="sub-tab ${magazineSubTab==='front'?'active':''}" onclick="setMagazineSubTab('front')">📰 Front Page</button>
+      <button class="sub-tab ${magazineSubTab==='guide'?'active':''}" onclick="setMagazineSubTab('guide')">📖 Pre-season Guide${guideReady?' <span class="sub-tab-count">NEW</span>':''}</button>
+    </div>
+    ${magazineSubTab === 'guide' ? renderPreseasonGuide() : `
+      ${lead ? `<article class="mag-lead"><div class="mag-kicker">${lead.icon} ${lead.kicker}</div><h1>${lead.title}</h1><p>${lead.body}</p></article>` : `<div class="empty">Begin the season to create the first edition.</div>`}
+      <div class="mag-story-grid">${stories.slice(1).map(x=>`<article class="mag-story mag-${x.tone}"><div class="mag-kicker">${x.icon} ${x.kicker}</div><h2>${x.title}</h2><p>${x.body}</p></article>`).join('')}</div>`}
+  `
 }
 
 window.closeTransferReveal=function(){
   const p=$('match-popup'); p.style.display='none'; p.classList.remove('match-popup-modal'); document.body.classList.remove('modal-open'); switchTab('magazine')
 }
 window.revealTransferAt=function(i){
-  const cards=[...(S.lastMarket||[])].filter(m=>['transfer','fa_sign','renew','retirement'].includes(m.phase)&&m.kind!=='team')
+  const cards=[...(S.lastMarket||[])].filter(m=>['transfer','fa_sign','renew','retirement','historic_debut'].includes(m.phase)&&m.kind!=='team')
     .sort((a,b)=>({generational:6,legendary:5,epic:4,rare:3,uncommon:2,common:1}[b.tier]||0)-({generational:6,legendary:5,epic:4,rare:3,uncommon:2,common:1}[a.tier]||0)||(b.signFee||0)-(a.signFee||0)).slice(0,8)
   const m=cards[i]; if(!m) return closeTransferReveal()
+  const destination=(S.allTeams||[]).find(t=>t.id===m.toId)
+  const source=(S.allTeams||[]).find(t=>t.id===m.fromId)
+  const revealColors=destination?.colors || source?.colors || ['#2056d8','#ffffff']
   const inner=$('match-popup-inner')
-  const movement=m.phase==='retirement' ? `${flag(m.fromCC)} ${m.from} → Retirement` : m.phase==='renew' ? `${flag(m.toCC)} ${m.to}` : `${m.from?flag(m.fromCC)+' '+m.from:'Free Agency'} <span>→</span> ${flag(m.toCC)} ${m.to}`
+  const movement=m.phase==='retirement' ? `${flag(m.fromCC)} ${m.from} → Retirement` : m.phase==='renew' ? `${flag(m.toCC)} ${m.to}` : m.phase==='historic_debut' ? `${m.from} <span>→</span> ${flag(m.toCC)} ${m.to}` : `${m.from?flag(m.fromCC)+' '+m.from:'Free Agency'} <span>→</span> ${flag(m.toCC)} ${m.to}`
   inner.innerHTML=`<button class="modal-x" onclick="closeTransferReveal()" aria-label="Close">✕</button>
-    <div class="transfer-reveal">
+    <div class="transfer-reveal" style="--sign-primary:${revealColors[0]};--sign-secondary:${revealColors[1]}">
+      <div class="transfer-club-shade"></div>
       <div class="transfer-reveal-count">DEAL ${i+1} / ${cards.length}</div>
       <div class="transfer-reveal-kicker">${i===0?'🚨 BREAKING NEWS':'TRANSFER WINDOW'}</div>
       <div class="transfer-reveal-tier">${m.tier?tierBadge(m.tier):''}</div>
       <h1>${m.name}</h1><div class="transfer-reveal-pos">${m.pos|| (m.kind==='coach'?'HEAD COACH':'')}</div>
       <div class="transfer-route">${movement}</div>
-      <div class="transfer-figures">${m.signFee?`<span><b>$${m.signFee}M</b> fee</span>`:''}${m.salary?`<span><b>$${m.salary}M</b> / year</span>`:''}${m.contractYears?`<span><b>${m.contractYears}</b> years</span>`:''}</div>
+      <div class="transfer-figures">${m.signFee?`<span><b>${fmtMoney(m.signFee)}</b> fee</span>`:''}${m.salary?`<span><b>${fmtMoney(m.salary)}</b> / year</span>`:''}${m.contractYears?`<span><b>${m.contractYears}</b> years</span>`:''}</div>
       <div class="transfer-reveal-headline">${transferHeadline(m)}</div>
       <div class="transfer-actions"><button class="btn" onclick="closeTransferReveal()">Read Magazine</button><button class="btn btn-primary" onclick="revealTransferAt(${i+1})">${i+1<cards.length?'Reveal next deal':'Finish window'} →</button></div>
     </div>`
 }
 function showTransferReveal(){
-  const cards=(S.lastMarket||[]).filter(m=>['transfer','fa_sign','renew','retirement'].includes(m.phase)&&m.kind!=='team')
+  const cards=(S.lastMarket||[]).filter(m=>['transfer','fa_sign','renew','retirement','historic_debut'].includes(m.phase)&&m.kind!=='team')
   if(!cards.length){ switchTab('play'); return }
   const p=$('match-popup'); p.classList.add('match-popup-modal'); p.style.display='flex'; document.body.classList.add('modal-open'); revealTransferAt(0)
 }
@@ -887,9 +1121,9 @@ function renderPlay() {
     el.innerHTML = `
       <div style="text-align:center;padding:48px 20px">
         <div style="font-size:64px;margin-bottom:16px">★</div>
-        <div style="font-family:var(--font-head);font-size:32px;font-weight:900;color:var(--blue2);letter-spacing:.12em">CHAMPIONS LEAGUE</div>
-        <div style="color:var(--txt2);margin:8px 0 28px">32 clubs. One trophy. Your story starts here.</div>
-        <button class="btn btn-primary" onclick="handleMain()" style="padding:12px 32px;font-size:14px">▶ Begin Season ${S.season || 1}</button>
+        <div style="font-family:var(--font-head);font-size:32px;font-weight:900;color:var(--blue2);letter-spacing:.12em">${S.era==='european_cup'?'EUROPEAN CUP':'CHAMPIONS LEAGUE'}</div>
+        <div style="color:var(--txt2);margin:8px 0 28px">${S.era==='european_cup'?'16 clubs. A completely open knockout draw. European history begins in 1956.':'32 clubs. One trophy. Your story continues.'}</div>
+        <button class="btn btn-primary" onclick="handleMain()" style="padding:12px 32px;font-size:14px">▶ Begin ${gameYear()}</button>
       </div>`
     return
   }
@@ -910,7 +1144,7 @@ function renderPlay() {
         <div style="font-size:56px">🏆</div>
         <div class="champion-title">CHAMPIONS OF EUROPE</div>
         <div class="champion-name">${flag(S.champion?.cc || '')} ${S.champion?.name}</div>
-        <div style="font-size:12px;color:var(--txt2);margin-top:6px">Season ${S.season}</div>
+        <div style="font-size:12px;color:var(--txt2);margin-top:6px">${gameYear()} · ${S.era==='european_cup'?'European Cup':'Champions League'}</div>
       </div>
       ${(aw.topScorer || aw.offMVP || aw.defMVP) ? `
       <div class="sec">SEASON AWARDS</div>
@@ -919,7 +1153,19 @@ function renderPlay() {
         ${aw.offMVP   ? `<div class="award-card"><div class="award-icon">🌟</div><div class="award-label">Offensive MVP</div><div class="award-name">${aw.offMVP.name}</div><div class="award-sub">${aw.offMVP.rating} avg · ${aw.offMVP.pos} · ${aw.offMVP.team}</div></div>` : ''}
         ${aw.defMVP   ? `<div class="award-card"><div class="award-icon">🛡️</div><div class="award-label">Defensive MVP</div><div class="award-name">${aw.defMVP.name}</div><div class="award-sub">${aw.defMVP.rating} avg · ${aw.defMVP.pos} · ${aw.defMVP.team}</div></div>` : ''}
       </div>` : ''}
-      ${renderTopScorers()}`
+      ${renderTopScorers()}
+      ${S.era === 'european_cup' ? (S.pendingEraTransition ? `
+        <section class="era-transition-card era-transition-confirmed">
+          <div class="era-transition-kicker">A NEW ERA HAS BEEN APPROVED</div>
+          <h2>The Champions League begins in ${S.eraTransitionYear}</h2>
+          <p>Continue to the next year to unveil the 32-team group-stage competition. European Cup history will remain in the archive.</p>
+        </section>` : `
+        <section class="era-transition-card">
+          <div class="era-transition-kicker">THE FUTURE OF EUROPEAN FOOTBALL</div>
+          <h2>Advance to the Champions League era?</h2>
+          <p>The next year will permanently adopt the modern 32-team group-stage format, full-color presentation and current Champions League identity. The history already created remains intact.</p>
+          <button class="btn btn-primary" onclick="advanceToChampionsLeagueEra()">Advance from ${gameYear()+1} →</button>
+        </section>`) : (S.eraTransitionYear ? `<div class="era-transition-note">The Champions League era began in ${S.eraTransitionYear}.</div>` : '')}`
   } else if (phase === 'groups') {
     const played = S.groupMatches.filter(m => m.played).length
     const total = S.groupMatches.length
@@ -954,9 +1200,9 @@ function renderPlay() {
     // idle: pre-season splash
     html = `<div style="text-align:center;padding:48px 20px">
       <div style="font-size:64px;margin-bottom:16px">★</div>
-      <div style="font-family:var(--font-head);font-size:32px;font-weight:900;color:var(--blue2);letter-spacing:.12em">SEASON ${S.season || 1}</div>
-      <div style="color:var(--txt2);margin:8px 0 28px">The market opens first. Then the local leagues decide who qualifies for Europe.</div>
-      <button class="btn btn-primary" onclick="handleMain()" style="padding:12px 32px;font-size:14px">▶ Begin Season ${S.season || 1}</button>
+      <div style="font-family:var(--font-head);font-size:32px;font-weight:900;color:var(--blue2);letter-spacing:.12em">${gameYear()}</div>
+      <div style="color:var(--txt2);margin:8px 0 28px">The market opens first. Then the local leagues decide who qualifies for ${S.era==='european_cup'?'the European Cup':'Europe'}.</div>
+      <button class="btn btn-primary" onclick="handleMain()" style="padding:12px 32px;font-size:14px">▶ Begin ${gameYear()}</button>
     </div>`
   }
   el.innerHTML = html
@@ -966,10 +1212,10 @@ function renderPlay() {
 function renderQualifyingScreen() {
   const lr = S.localLeagueResults || {}
   let html = `
-    <div class="sec">LOCAL LEAGUES — SEASON ${S.season} CHAMPIONS</div>
+    <div class="sec">LOCAL LEAGUES — ${gameYear()} CHAMPIONS</div>
     <div style="color:var(--txt2);font-size:12px;margin-bottom:14px">
       Each league has been decided. The team in <span style="color:var(--gold)">gold</span> is this season's local champion.
-      Click "Draw Groups" above when ready.
+      Click "${S.era==='european_cup'?'Draw European Cup':'Draw Groups'}" above when ready.
     </div>
     <div class="qualify-grid">`
 
@@ -1066,7 +1312,7 @@ function renderUpcomingGames() {
 function renderStatsScreen() {
   const seasonNum = S.season || 1
   return `
-    <div class="sec">STATS UPDATE — SEASON ${seasonNum}</div>
+    <div class="sec">STATS UPDATE — ${gameYear()}</div>
     <div style="color:var(--txt2);font-size:12px;margin-bottom:14px">
       Each team's five stats have been re-rolled around their permanent
       <strong>Base</strong> rating. Drift is normally distributed (±7 typical, rarely more)
@@ -1104,7 +1350,7 @@ function renderStatsTable() {
     const coachBoost = tierWeight[coach?.tier] || 0
     const moneyBase = t.money || 6
     const gmBonus = t.gm?.moneyBonus || 0
-    const moneyEff = Math.min(14, moneyBase + gmBonus)
+    const moneyEff = Math.min(18, moneyBase + gmBonus)
     return {
       id: t.id,
       name: t.name,
@@ -1136,7 +1382,7 @@ function renderStatsTable() {
 
   const cols = [
     { id: 'name',      label: 'Team',     isText: true },
-    { id: 'money',     label: '$',        title: 'Annual income (base + GM bonus shown next to it)' },
+    { id: 'money',     label: 'Tier',     title: 'Club financial and sporting tier; actual annual revenue is shown in Finance' },
     { id: 'psOv',      label: 'PS-Ov',    title: 'Prior season overall (0 if first season)' },
     { id: 'csOv',      label: 'CS-Ov',    title: 'Current season overall (avg of 5 stats)' },
     { id: 'csOvWith',  label: 'CS-Ov+',   title: 'Current season overall including stars + coach bonus' },
@@ -1191,10 +1437,10 @@ function renderMarketScreen() {
   const moves = S.lastMarket || []
   const seasonNum = S.season || 1
   let html = `
-    <div class="sec">OFFSEASON — SEASON ${seasonNum}</div>
+    <div class="sec">OFFSEASON — ${gameYear()}</div>
     <div style="color:var(--txt2);font-size:12px;margin-bottom:14px">
-      Retirements, contract resolutions, income updates, rookie spawns,
-      free-agent signings, salary deductions. Click "Run Local Leagues"
+      Revenue, squad payroll, transfers, free agents, contract renewals,
+      named-player wages, and club investment. Click "Run Local Leagues"
       above when you're ready to continue.
     </div>`
 
@@ -1207,74 +1453,40 @@ function renderMarketScreen() {
   const teamMoves = moves.filter(m => m.kind === 'team')
   if (teamMoves.length) {
     const incomeTotal = teamMoves.filter(m => m.phase === 'income').reduce((s,m) => s + m.amount, 0)
-    const salaryTotal = teamMoves.filter(m => m.phase === 'salary').reduce((s,m) => s + m.amount, 0)
-    const penaltyTotal = teamMoves.filter(m => m.phase === 'champion_penalty').reduce((s,m) => s + m.amount, 0)
+    const salaryTotal = teamMoves.filter(m => m.phase === 'salary').reduce((s,m) => s + Math.abs(m.amount || 0), 0)
+    const baseCostTotal = teamMoves.filter(m => ['base_spend','operations'].includes(m.phase)).reduce((s,m) => s + Math.abs(m.amount || 0), 0)
+    const investmentTotal = teamMoves.filter(m => m.phase === 'invest').reduce((s,m) => s + Math.abs(m.amount || 0), 0)
     // Transfer flow.
     const transfers = moves.filter(m => m.phase === 'transfer')
     const transferCount = transfers.length
     const feesPaid = transfers.reduce((s,m) => s + (m.signFee || 0), 0)
-    const salesPaid = transfers.reduce((s,m) => s + (m.saleValue || 0), 0)
     // FA flow.
     const faMoves = moves.filter(m => m.phase === 'fa_sign')
     const faCount = faMoves.length
     const faFees = faMoves.reduce((s,m) => s + (m.signFee || 0), 0)
-    // Splurges.
-    const splurges = moves.filter(m => m.phase === 'splurge')
-    const splurgeCount = splurges.length
-    const splurgeCost = splurges.reduce((s,m) => s + Math.abs(m.amount || 0), 0)
-    // Cash overflow (excess burned at end of offseason).
-    const overflows = moves.filter(m => m.phase === 'cash_overflow')
-    const overflowCount = overflows.length
-    const overflowTotal = overflows.reduce((s,m) => s + Math.abs(m.amount || 0), 0)
     html += `<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
       <div style="padding:8px 12px;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);border-radius:6px">
         <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Total income</div>
-        <div style="font-size:16px;color:var(--green);font-weight:700">+${incomeTotal}M</div>
+        <div style="font-size:16px;color:var(--green);font-weight:700">+${fmtMoney(incomeTotal)}</div>
       </div>
       <div style="padding:8px 12px;background:rgba(244,67,54,.1);border:1px solid rgba(244,67,54,.3);border-radius:6px">
         <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Total salaries</div>
-        <div style="font-size:16px;color:var(--red);font-weight:700">${salaryTotal}M</div>
+        <div style="font-size:16px;color:var(--red);font-weight:700">−${fmtMoney(salaryTotal)}</div>
       </div>
+      <div style="padding:8px 12px;background:rgba(244,67,54,.08);border:1px solid rgba(244,67,54,.22);border-radius:6px">
+        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Base squads + operations</div>
+        <div style="font-size:16px;color:var(--txt2);font-weight:700">−${fmtMoney(baseCostTotal)}</div>
+      </div>
+      ${investmentTotal ? `<div style="padding:8px 12px;background:rgba(171,71,188,.1);border:1px solid rgba(171,71,188,.3);border-radius:6px"><div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Team development</div><div style="font-size:16px;color:#ce93d8;font-weight:700">−${fmtMoney(investmentTotal)}</div></div>` : ''}
       ${transferCount ? `<div style="padding:8px 12px;background:rgba(33,150,243,.1);border:1px solid rgba(33,150,243,.3);border-radius:6px">
         <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Transfers (${transferCount})</div>
-        <div style="font-size:16px;color:var(--blue2);font-weight:700">−${feesPaid}M · sellers +${salesPaid}M</div>
+        <div style="font-size:16px;color:var(--blue2);font-weight:700">${fmtMoney(feesPaid)} moved between clubs</div>
       </div>` : ''}
       ${faCount ? `<div style="padding:8px 12px;background:rgba(240,192,64,.1);border:1px solid rgba(240,192,64,.3);border-radius:6px">
         <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">FA signings (${faCount})</div>
-        <div style="font-size:16px;color:var(--gold);font-weight:700">−${faFees}M</div>
-      </div>` : ''}
-      ${splurgeCount ? `<div style="padding:8px 12px;background:rgba(233,30,99,.1);border:1px solid rgba(233,30,99,.3);border-radius:6px">
-        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Splurges (${splurgeCount})</div>
-        <div style="font-size:16px;color:#ff4081;font-weight:700">−${splurgeCost}M · +5 stats</div>
-      </div>` : ''}
-      ${overflowCount ? `<div style="padding:8px 12px;background:rgba(120,120,140,.1);border:1px solid rgba(120,120,140,.3);border-radius:6px">
-        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Excess burned (${overflowCount})</div>
-        <div style="font-size:16px;color:var(--txt2);font-weight:700">−${overflowTotal}M owner takeout</div>
-      </div>` : ''}
-      ${penaltyTotal ? `<div style="padding:8px 12px;background:rgba(240,192,64,.1);border:1px solid rgba(240,192,64,.3);border-radius:6px">
-        <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">Champion penalty</div>
-        <div style="font-size:16px;color:var(--gold);font-weight:700">${penaltyTotal}M</div>
+        <div style="font-size:16px;color:var(--gold);font-weight:700">−${fmtMoney(faFees)}</div>
       </div>` : ''}
     </div>`
-  }
-
-  // Splurge details (which teams spent for the +5 boost).
-  const splurgeMoves = moves.filter(m => m.phase === 'splurge')
-  if (splurgeMoves.length) {
-    html += `<div class="sec" style="color:#ff4081">SPLURGES — +5 to all stats next season (${splurgeMoves.length})</div>`
-    html += '<div class="market-list">'
-    splurgeMoves.forEach(m => {
-      html += `<div class="market-card">
-        <div class="row" style="gap:6px">
-          <span style="font-size:14px">🔥</span>
-          <span style="font-weight:600">${flag(m.teamCC)} ${m.teamName}</span>
-        </div>
-        <div style="font-size:11px;color:var(--txt3);margin-top:4px">
-          Spent <strong style="color:#ff4081">$${Math.abs(m.amount)}M</strong> on training camp & facilities · cash now $${m.cashAfter}M
-        </div>
-      </div>`
-    })
-    html += '</div>'
   }
 
   html += renderMarketMoveList(moves)
@@ -1332,7 +1544,7 @@ function renderMarketMoveCard(m) {
     summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--red)">Free agency</span>`
     if (m.reason) summary += ` <span style="color:var(--txt3);font-size:10px">(${m.reason})</span>`
     if (typeof m.happiness === 'number') {
-      summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">Happiness ${m.happiness} · threshold ${m.tier ? ({generational:45,legendary:35,epic:25,rare:15,uncommon:5,common:0}[m.tier]) : '?'}</div>`
+      summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">Happiness ${m.happiness} · mood also affected the salary demand</div>`
     }
   } else if (m.phase === 'renew') {
     summary = `<span style="color:var(--green)">Renews with ${flag(toCC)} ${m.to}</span>`
@@ -1340,16 +1552,16 @@ function renderMarketMoveCard(m) {
   } else if (m.phase === 'fa_sign') {
     summary = `<span style="color:var(--gold)">Free agency → ${flag(toCC)} ${m.to}</span>`
     const bits = []
-    if (m.signFee)      bits.push(`fee ${m.signFee}M`)
-    if (m.salary)       bits.push(`${m.salary}M/yr`)
+    if (m.signFee)      bits.push(`bonus ${fmtMoney(m.signFee)}`)
+    if (m.salary)       bits.push(`${fmtMoney(m.salary)}/yr`)
     if (m.contractYears) bits.push(`${m.contractYears} yr`)
     if (bits.length) summary += ` <span style="color:var(--txt3);font-size:10px">(${bits.join(' · ')})</span>`
   } else if (m.phase === 'transfer') {
     summary = `${flag(fromCC)} ${m.from} → <span style="color:var(--blue2)">${flag(toCC)} ${m.to}</span>`
     const bits = []
-    if (m.signFee)   bits.push(`fee ${m.signFee}M`)
-    if (m.saleValue) bits.push(`seller +${m.saleValue}M`)
-    if (m.salary)    bits.push(`${m.salary}M/yr`)
+    if (m.signFee)   bits.push(`fee ${fmtMoney(m.signFee)}`)
+    if (m.saleValue) bits.push(`seller +${fmtMoney(m.saleValue)}`)
+    if (m.salary)    bits.push(`${fmtMoney(m.salary)}/yr`)
     if (m.contractYears) bits.push(`${m.contractYears} yr`)
     if (bits.length) summary += `<div style="margin-top:2px;color:var(--txt3);font-size:10px">${bits.join(' · ')}</div>`
     if (m.displaced) {
@@ -1505,6 +1717,7 @@ function renderStarDetailHTML(star) {
 
     careerRows.push({
       season: h.season,
+      year: historyYear(h),
       teamName: rec.teamName,
       avgRating: rec.avgRating,
       goals: rec.goals || 0,
@@ -1520,9 +1733,10 @@ function renderStarDetailHTML(star) {
   if (star.ratings?.length) {
     const alreadyHasCurrent = careerRows.some(r => r.season === S.season)
     if (!alreadyHasCurrent) {
-      const reached = S.roundReached?.[star.teamId] || (S.phase === 'done' ? 'Group' : 'In progress')
+      const reached = S.roundReached?.[star.teamId] || (S.phase === 'done' ? (S.era === 'european_cup' ? 'Round of 16' : 'Group') : 'In progress')
       careerRows.unshift({
         season: S.season,
+        year: gameYear(),
         teamName: star.teamName,
         avgRating: star.ratings.reduce((a,b)=>a+b,0) / star.ratings.length,
         goals: star.goals || 0,
@@ -1548,7 +1762,7 @@ function renderStarDetailHTML(star) {
   // Awards summary cards.
   const awardsSummary = `
     <div class="career-awards">
-      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${totalGold || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${totalGold || 0}</div><div class="career-award-label">European Titles</div></div>
       <div class="career-award-card"><div class="career-award-num">${topScorerCount}</div><div class="career-award-label">Top Scorer</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${offMVPCount}</div><div class="career-award-label">Off MVP</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--green)">${defMVPCount}</div><div class="career-award-label">Def MVP</div></div>
@@ -1564,7 +1778,7 @@ function renderStarDetailHTML(star) {
       <th>Result</th><th>Awards</th>
     </tr></thead><tbody>
     ${careerRows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
-      <td class="num"><strong>${row.season}</strong></td>
+      <td class="num"><strong>${row.year || yearForSeason(row.season)}</strong></td>
       <td>${row.teamName}</td>
       <td class="num" style="color:var(--blue2)">${row.avgRating ? row.avgRating.toFixed(2) : '—'}</td>
       <td class="num" style="color:var(--gold)">${row.goals || '—'}</td>
@@ -1623,12 +1837,13 @@ function renderStarDetailHTML(star) {
 
   const contractHTML = skillData.contract ? `
     <div class="skill-meta-pill">
-      📜 ${skillData.contract.yearsLeft}/${skillData.contract.yearsTotal} yr · $${skillData.contract.salary}M/yr
+      📜 ${skillData.contract.yearsLeft}/${skillData.contract.yearsTotal} yr · ${fmtMoney(skillData.contract.salary)}/yr
     </div>` : ''
 
   return `
     <div class="playback-header">
       <div class="playback-round">Player Profile</div>
+      ${star.historicLegend ? '<span class="historic-legend-badge">HISTORIC LEGEND</span>' : ''}
       ${tierBadge(star.tier)}
     </div>
     <div style="font-family:var(--font-head);font-size:26px;font-weight:800;margin-bottom:4px">${star.name}</div>
@@ -1637,8 +1852,8 @@ function renderStarDetailHTML(star) {
       ${flag(team?.cc || '')} ${team?.name || star.teamName || '—'}
     </div>
     <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">
-      Age: ${age + 22} (${age}/${star.lifespan} seasons in career) ·
-      Career goals: <span style="color:var(--gold)">${star.goals || 0}</span>
+      Age: ${playerAge(star, S.season)} (${age}/${star.lifespan} seasons in career) ·
+      Career goals: <span style="color:var(--gold)">${careerGoalsFor(star)}</span>
     </div>
     <div class="skill-meta-row">
       ${contractHTML}
@@ -1678,6 +1893,7 @@ function renderCoachDetailHTML(coach) {
     if (!entry) return
     rows.push({
       season: h.season,
+      year: historyYear(h),
       teamId: entry.teamId,
       teamName: entry.teamName,
       teamCC: entry.cc,
@@ -1695,6 +1911,7 @@ function renderCoachDetailHTML(coach) {
   if (liveTeam && S.phase !== 'idle' && S.phase !== 'done') {
     rows.unshift({
       season: S.season,
+      year: gameYear(),
       teamId: liveTeam.id,
       teamName: liveTeam.name,
       teamCC: liveTeam.cc,
@@ -1723,7 +1940,7 @@ function renderCoachDetailHTML(coach) {
   // every team they've led.
   const summary = career ? `
     <div class="career-awards">
-      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${career.titles || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${career.titles || 0}</div><div class="career-award-label">European Titles</div></div>
       <div class="career-award-card"><div class="career-award-num">${career.finals || 0}</div><div class="career-award-label">Finals lost</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--txt2)">${career.semiFinals || 0}</div><div class="career-award-label">Semis</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--txt2)">${career.quarterFinals || 0}</div><div class="career-award-label">QFs</div></div>
@@ -1731,7 +1948,7 @@ function renderCoachDetailHTML(coach) {
       <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${career.seasons || 0}</div><div class="career-award-label">Seasons</div></div>
     </div>
     <div class="career-awards" style="margin-top:8px">
-      <div class="career-award-card"><div class="career-award-num">${career.played || 0}</div><div class="career-award-label">CL Games</div></div>
+      <div class="career-award-card"><div class="career-award-num">${career.played || 0}</div><div class="career-award-label">European Games</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--green)">${career.wins || 0}</div><div class="career-award-label">Wins</div></div>
       <div class="career-award-card"><div class="career-award-num">${career.draws || 0}</div><div class="career-award-label">Draws</div></div>
       <div class="career-award-card"><div class="career-award-num">${career.losses || 0}</div><div class="career-award-label">Losses</div></div>
@@ -1751,7 +1968,7 @@ function renderCoachDetailHTML(coach) {
       <th class="num">GA</th>
     </tr></thead><tbody>
     ${rows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
-      <td class="num"><strong>${row.season}</strong></td>
+      <td class="num"><strong>${row.year || yearForSeason(row.season)}</strong></td>
       <td><span class="team-name-link" onclick="window.openTeamDetail('${row.teamId}')">${flag(row.teamCC)} ${row.teamName}</span></td>
       <td style="font-size:11px">${reachLabel(row.reached)}</td>
       <td class="num">${row.played != null ? row.played : '—'}</td>
@@ -1804,7 +2021,10 @@ function renderTeamDetailHTML(team) {
     if (qual) {
       rows.push({
         season: h.season,
+        year: historyYear(h),
         overall: qual.overall || 0,
+        localPosition: qual.localPosition || null,
+        localLeagueName: qual.localLeagueName || null,
         reached: qual.reached,
         played: qual.played, wins: qual.wins, gf: qual.gf, ga: qual.ga,
         coach: qual.coach,
@@ -1816,7 +2036,10 @@ function renderTeamDetailHTML(team) {
     if (dnq) {
       rows.push({
         season: h.season,
+        year: historyYear(h),
         overall: dnq.overall || 0,
+        localPosition: dnq.localPosition || null,
+        localLeagueName: dnq.localLeagueName || null,
         reached: 'DNQ',
         played: 0, wins: 0, gf: 0, ga: 0,
         coach: dnq.coach,
@@ -1830,7 +2053,10 @@ function renderTeamDetailHTML(team) {
     if (h.roundReached?.[team.id]) {
       rows.push({
         season: h.season,
+        year: historyYear(h),
         overall: 0,
+        localPosition: null,
+        localLeagueName: null,
         reached: h.roundReached[team.id],
         played: null, wins: null, gf: null, ga: null,
         coach: null,
@@ -1843,15 +2069,25 @@ function renderTeamDetailHTML(team) {
   // Inject the in-progress current season at the top.
   const liveTeam = S.teams?.find(t => t.id === team.id)
   if (liveTeam && S.phase !== 'idle' && S.phase !== 'done') {
-    const stars = (liveTeam.stars || []).map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier }))
+    const stars = (liveTeam.stars || []).map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier, salary: s.contract?.salary }))
+    let liveLocal = null
+    Object.values(S.localLeagueResults || {}).some(result => {
+      const idx = (result.standings || []).findIndex(entry => entry.team.id === liveTeam.id)
+      if (idx < 0) return false
+      liveLocal = { position: idx + 1, league: result.league.name }
+      return true
+    })
     rows.unshift({
       season: S.season,
+      year: gameYear(),
       overall: liveTeam.currentOverall || 0,
+      localPosition: liveLocal?.position || null,
+      localLeagueName: liveLocal?.league || null,
       reached: 'In progress',
       played: (liveTeam.w || 0) + (liveTeam.d || 0) + (liveTeam.l || 0),
       wins: liveTeam.w || 0,
       gf: liveTeam.gf || 0, ga: liveTeam.ga || 0,
-      coach: liveTeam.coach ? { name: liveTeam.coach.name, tier: liveTeam.coach.tier } : null,
+      coach: liveTeam.coach ? { id: liveTeam.coach.id, name: liveTeam.coach.name, tier: liveTeam.coach.tier, salary: liveTeam.coach.contract?.salary } : null,
       stars,
       current: true,
     })
@@ -1872,23 +2108,23 @@ function renderTeamDetailHTML(team) {
   const renderStarsCell = (stars) => {
     if (!stars?.length) return '<span style="color:var(--txt3)">—</span>'
     return stars.map(s =>
-      `<span style="color:${tierColor(s.tier)};margin-right:6px;font-size:11px">⭐${s.name}<span style="color:var(--txt3)">·${s.pos}</span></span>`
+      `<button class="detail-inline-link" style="color:${tierColor(s.tier)}" onclick="event.stopPropagation();window.openStarDetail('${s.id}')">⭐ ${s.name}<span> · ${s.pos}</span></button>`
     ).join('')
   }
   const renderCoachCell = (coach) => {
     if (!coach) return '<span style="color:var(--txt3)">—</span>'
-    return `<span style="color:${tierColor(coach.tier)};font-size:11px">📋${coach.name}</span>`
+    return `<button class="detail-inline-link" style="color:${tierColor(coach.tier)}" onclick="event.stopPropagation();window.openCoachDetail('${coach.id}')">📋 ${coach.name}</button>`
   }
 
   // Top-level totals (from S.teamStats — the all-time accumulator).
   const summary = seasonStats ? `
     <div class="career-awards">
-      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${seasonStats.titles || 0}</div><div class="career-award-label">UCL Titles</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--gold)">${seasonStats.titles || 0}</div><div class="career-award-label">European Titles</div></div>
       <div class="career-award-card"><div class="career-award-num">${seasonStats.finals || 0}</div><div class="career-award-label">Finals lost</div></div>
       <div class="career-award-card"><div class="career-award-num">${seasonStats.semiFinals || 0}</div><div class="career-award-label">Semis</div></div>
       <div class="career-award-card"><div class="career-award-num">${seasonStats.quarterFinals || 0}</div><div class="career-award-label">QFs</div></div>
       <div class="career-award-card"><div class="career-award-num" style="color:var(--legendary)">${seasonStats.localTitles || 0}</div><div class="career-award-label">Local Titles</div></div>
-      <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${seasonStats.participations || 0}</div><div class="career-award-label">CL appearances</div></div>
+      <div class="career-award-card"><div class="career-award-num" style="color:var(--blue2)">${seasonStats.participations || 0}</div><div class="career-award-label">European appearances</div></div>
     </div>` : ''
 
   const careerTable = rows.length ? `
@@ -1896,7 +2132,8 @@ function renderTeamDetailHTML(team) {
     <div class="table-wrap"><table class="data-table compact career-table"><thead><tr>
       <th class="num">Yr</th>
       <th class="num">OVR</th>
-      <th>Result</th>
+      <th title="Position in the domestic league">Local</th>
+      <th>Europe</th>
       <th class="num">P</th>
       <th class="num">W</th>
       <th class="num">GF</th>
@@ -1905,8 +2142,9 @@ function renderTeamDetailHTML(team) {
       <th>Stars</th>
     </tr></thead><tbody>
     ${rows.map(row => `<tr ${row.current ? 'class="career-current"' : ''}>
-      <td class="num"><strong>${row.season}</strong></td>
+      <td class="num"><strong>${row.year || yearForSeason(row.season)}</strong></td>
       <td class="num" style="color:var(--gold)">${row.overall || '—'}</td>
+      <td style="font-size:11px">${row.localPosition ? `<strong>${row.localPosition}${row.localPosition===1?'st':row.localPosition===2?'nd':row.localPosition===3?'rd':'th'}</strong>${row.localLeagueName?` <span style="color:var(--txt3)">${row.localLeagueName}</span>`:''}` : '—'}</td>
       <td style="font-size:11px">${reachLabel(row.reached)}</td>
       <td class="num">${row.played != null ? row.played : '—'}</td>
       <td class="num" style="color:var(--green)">${row.wins != null ? row.wins : '—'}</td>
@@ -1938,19 +2176,16 @@ function renderTeamDetailHTML(team) {
     </div>` : ''
 
   // Cash on hand — color-coded for solvency.
-  const cash = typeof team.cashOnHand === 'number' ? team.cashOnHand : null
+  const cash = typeof team.treasury === 'number' ? team.treasury : (typeof team.cashOnHand === 'number' ? team.cashOnHand : null)
   const cashColor = cash == null ? 'var(--txt3)'
                   : cash < 0      ? 'var(--red)'
                   : cash < 5      ? 'var(--gold)'
                                   : 'var(--green)'
   const cashBadge = cash != null
-    ? `<span class="badge" style="background:${cashColor}22;color:${cashColor};border:1px solid ${cashColor}66;font-size:10px">💰 ${cash}M</span>`
+    ? `<span class="badge" style="background:${cashColor}22;color:${cashColor};border:1px solid ${cashColor}66;font-size:10px">💰 ${fmtMoney(cash)}</span>`
     : ''
 
-  // Splurge boost active for current season.
-  const splurgeBadge = team.splurgeActive
-    ? `<span class="badge" style="background:rgba(233,30,99,.15);color:#ff4081;border:1px solid rgba(233,30,99,.5);font-size:10px" title="This team spent $5M before the season for +5 to all stats">🔥 Splurge +5</span>`
-    : ''
+  const splurgeBadge = ''
 
   const colors = team.colors || ['#444', '#fff']
   const [primary, secondary] = colors
@@ -1962,12 +2197,29 @@ function renderTeamDetailHTML(team) {
         <div class="team-hero-eyebrow">Club Profile</div>
         <div class="team-hero-name">${flag(team.cc)} ${team.name}</div>
         <div class="team-hero-meta">
-          <span class="badge" style="background:rgba(240,192,64,.15);color:var(--gold);border:1px solid rgba(240,192,64,.4);font-size:10px">$ ${team.money || '—'}M${team.gm?.moneyBonus ? ` <span style="color:var(--green)">+${team.gm.moneyBonus}</span>` : ''}</span>
+          <span class="badge" style="background:rgba(240,192,64,.15);color:var(--gold);border:1px solid rgba(240,192,64,.4);font-size:10px">Revenue ${fmtMoney(annualIncome(team))}</span>
           ${cashBadge}
           ${splurgeBadge}
           <span style="font-size:12px;color:var(--txt3)">Overall <strong style="color:var(--gold)">${team.currentOverall || '—'}</strong></span>
         </div>
       </div>
+    </div>
+    <div class="team-current-grid">
+      <div class="team-current-card">
+        <div class="career-section-title">CURRENT COACH</div>
+        ${(() => { const c=(S.coaches||[]).find(x=>x.teamId===team.id); return c ? `<button class="current-person" onclick="window.openCoachDetail('${c.id}')"><span>📋</span><strong style="color:${tierColor(c.tier)}">${c.name}</strong><small>${tierLabel(c.tier)} · ${fmtMoney(c.contract?.salary||0)}/yr</small></button>` : '<div class="empty compact-empty">No coach</div>' })()}
+      </div>
+      <div class="team-current-card">
+        <div class="career-section-title">CURRENT STARS</div>
+        <div class="current-stars-list">${(team.stars||[]).map(star=>`<button class="current-person" onclick="window.openStarDetail('${star.id}')"><span>⭐</span><strong style="color:${tierColor(star.tier)}">${star.name}</strong><small>${star.pos} · ${tierLabel(star.tier)} · ${fmtMoney(star.contract?.salary||0)}/yr</small></button>`).join('') || '<div class="empty compact-empty">No stars</div>'}</div>
+      </div>
+    </div>
+    <div class="team-finance-strip">
+      <div><span>Revenue</span><strong>${fmtMoney(annualIncome(team))}</strong></div>
+      <div><span>Base squad</span><strong>−${fmtMoney(baseSquadSalary(team))}</strong></div>
+      <div><span>Operations</span><strong>−${fmtMoney(operatingCosts(team))}</strong></div>
+      <div><span>Stars + coach</span><strong>−${fmtMoney(teamAnnualSalary(team))}</strong></div>
+      <div><span>Treasury</span><strong>${fmtMoney(cash||0)}</strong></div>
     </div>
     ${gmCard}
     ${summary}
@@ -2165,68 +2417,44 @@ function renderTeamsRatings(rows) {
 }
 
 function renderTeamsFinance(rows) {
-  // Build finance rows with all the relevant numbers.
-  const finance = rows.map(t => {
-    const baseMoney = t.money || 0
-    const effMoney = effectiveMoney(t)
-    const gmBonus = effMoney - baseMoney
-    const income = annualIncome(t)
-    const base = baseSpend(t)
-    const salary = teamAnnualSalary(t)
-    const net = income - base - salary
-    const cash = t.cashOnHand || 0
-    return { ...t, baseMoney, effMoney, gmBonus, income, base, salary, net, cash }
+  const currentLedger = [...(S.financeHistory || [])].reverse().find(x => x.season === S.season)
+  const ledgerByTeam = Object.fromEntries((currentLedger?.clubs || []).map(x => [x.teamId, x]))
+  const finance = rows.map(team => {
+    const snap = financeSnapshot(team)
+    return { ...team, ...snap, ...(ledgerByTeam[team.id] || {}) }
   })
-
   const sorters = {
-    income:  (a,b) => b.income - a.income,
-    salary:  (a,b) => b.salary - a.salary,
-    net:     (a,b) => b.net - a.net,
-    cash:    (a,b) => b.cash - a.cash,
-    name:    (a,b) => a.name.localeCompare(b.name),
+    income:(a,b)=>b.income-a.income,
+    wages:(a,b)=>b.wageBill-a.wageBill,
+    surplus:(a,b)=>b.projectedSurplus-a.projectedSurplus,
+    treasury:(a,b)=>b.treasury-a.treasury,
+    spending:(a,b)=>(b.transferSpend||0)-(a.transferSpend||0),
+    name:(a,b)=>a.name.localeCompare(b.name),
   }
   const sorted = [...finance].sort(sorters[financeSort] || sorters.income)
-
-  let html = `<div class="sort-row">Sort: ${['income','salary','net','cash','name'].map(k =>
-    `<button class="sort-btn ${financeSort===k?'active':''}" onclick="setFinanceSort('${k}')">${k}</button>`).join('')}
-    </div>
-    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">
-      Income = base money + GM bonus. Net = income − base spend − salaries. Cash carries over each season.
-    </div>
-    <div class="table-wrap"><table class="data-table">
-      <thead><tr>
-        <th>Club</th>
-        <th title="Base team revenue">$ Base</th>
-        <th title="Bonus from general manager">+GM</th>
-        <th title="Annual income (base + GM bonus)">Income</th>
-        <th title="Annual base operating cost">− Base</th>
-        <th title="Annual salaries (players + coach)">− Salary</th>
-        <th title="Net annual surplus (income − base − salary)">= Net</th>
-        <th title="Cash on hand">Cash</th>
-        <th>GM</th>
-      </tr></thead><tbody>`
-  sorted.forEach(t => {
-    const gm = t.gm
-    const gmBadge = gm
-      ? `<span style="color:${tierColor(gm.tier)};font-size:11px">${gm.name}${gm.moneyBonus ? ` <span style="color:var(--green)">+${gm.moneyBonus}</span>` : ''}</span>`
-      : '<span style="color:var(--txt3)">—</span>'
-    const netColor = t.net > 0 ? 'var(--green)' : t.net < 0 ? 'var(--red)' : 'var(--txt2)'
-    html += `<tr style="cursor:pointer" onclick="window.openTeamDetail('${t.id}')">
-      <td>${teamPill(t)}</td>
-      <td class="num">$${t.baseMoney}M</td>
-      <td class="num" style="color:${t.gmBonus > 0 ? 'var(--green)' : 'var(--txt3)'}">${t.gmBonus > 0 ? '+' + t.gmBonus : '—'}</td>
-      <td class="num" style="color:var(--gold);font-weight:700">$${t.income}M</td>
-      <td class="num" style="color:var(--txt3)">−$${t.base}M</td>
-      <td class="num" style="color:var(--txt3)">−$${t.salary}M</td>
-      <td class="num" style="color:${netColor};font-weight:700">${t.net >= 0 ? '+' : ''}$${t.net}M</td>
-      <td class="num" style="color:var(--blue2);font-weight:700">$${t.cash}M</td>
-      <td>${gmBadge}</td>
+  let html = `<div class="sort-row">Sort: ${['income','wages','surplus','treasury','spending','name'].map(key=>`<button class="sort-btn ${financeSort===key?'active':''}" onclick="setFinanceSort('${key}')">${key}</button>`).join('')}</div>
+    <div class="finance-explainer">Revenue varies by club scale, president/director quality, recent results, and annual noise. Base squad payroll rises with club size; star and coach contracts are paid separately. Everything left flows into treasury for transfers or team development.</div>
+    <div class="table-wrap"><table class="data-table finance-table"><thead><tr>
+      <th>Club</th><th class="num">Revenue</th><th class="num">Base squad</th><th class="num">Operations</th><th class="num">Stars</th><th class="num">Coach</th><th class="num">Surplus</th><th class="num">Transfer spend</th><th class="num">Treasury</th><th>President / Director</th>
+    </tr></thead><tbody>`
+  sorted.forEach(team => {
+    const surplusColor = team.projectedSurplus >= 0 ? 'var(--green)' : 'var(--red)'
+    const gm = team.gm
+    html += `<tr style="cursor:pointer" onclick="window.openTeamDetail('${team.id}')">
+      <td>${teamPill(team)}</td>
+      <td class="num finance-income">${fmtMoney(team.income)}</td>
+      <td class="num">−${fmtMoney(team.baseSquad)}</td>
+      <td class="num">−${fmtMoney(team.operations)}</td>
+      <td class="num">−${fmtMoney(team.starSalary)}</td>
+      <td class="num">−${fmtMoney(team.coachSalary)}</td>
+      <td class="num" style="color:${surplusColor};font-weight:700">${team.projectedSurplus>=0?'+':''}${fmtMoney(team.projectedSurplus)}</td>
+      <td class="num" style="color:var(--legendary)">${fmtMoney(team.transferSpend||0)}</td>
+      <td class="num finance-treasury">${fmtMoney(team.treasury)}</td>
+      <td>${gm?`<strong style="color:${tierColor(gm.tier)}">${gm.name}</strong><small class="finance-gm-note">President factor ${(team.financeProfile?.presidentFactor||1).toFixed(3)} · ambition ${(team.financeProfile?.ambition||1).toFixed(2)}</small>`:'—'}</td>
     </tr>`
   })
-  html += '</tbody></table></div>'
-  return html
+  return html + '</tbody></table></div>'
 }
-
 window.setTeamsSubTab = function(k) { teamsSubTab = k; renderTeams(); parseEmoji(document.body) }
 window.setFinanceSort = function(k) { financeSort = k; renderTeams(); parseEmoji(document.body) }
 let financeSort = 'income'
@@ -2284,6 +2512,8 @@ function renderStarsPlayers(allStars) {
           const avg = x => x.ratings?.length ? x.ratings.reduce((p,q)=>p+q,0)/x.ratings.length : 0
           return avg(b) - avg(a)
         }
+      : k === 'salary'
+      ? (a,b) => (b.contract?.salary||0) - (a.contract?.salary||0)
       : (a,b) => a.name.localeCompare(b.name)
 
   const filtered = allStars.filter(s =>
@@ -2294,7 +2524,7 @@ function renderStarsPlayers(allStars) {
 
   let html = `<div class="sec">STAR PLAYERS (${filtered.length} of ${allStars.length})</div>
     <div class="sort-row">Sort:
-      ${['rarity','goals','rating','name'].map(k => `<button class="sort-btn ${starSort===k?'active':''}" onclick="setStarSort('${k}')">${k}</button>`).join('')}
+      ${['rarity','salary','goals','rating','name'].map(k => `<button class="sort-btn ${starSort===k?'active':''}" onclick="setStarSort('${k}')">${k}</button>`).join('')}
     </div>
     <div class="sort-row">Position:
       ${['ALL','FWD','MID','DEF','GK'].map(p => `<button class="sort-btn ${positionFilter===p?'active':''}" onclick="setPositionFilter('${p}')">${p}</button>`).join('')}
@@ -2302,8 +2532,12 @@ function renderStarsPlayers(allStars) {
     <div class="sort-row">Nationality:
       <select class="sort-select" onchange="setNationalityFilter(this.value)">
         <option value="ALL" ${nationalityFilter==='ALL'?'selected':''}>All countries</option>
-        ${allNationalities.map(cc => `<option value="${cc}" ${nationalityFilter===cc?'selected':''}>${flag(cc)} ${COUNTRY_NAME[cc] || cc}</option>`).join('')}
+        ${allNationalities.map(cc => `<option value="${cc}" ${nationalityFilter===cc?'selected':''}>${COUNTRY_NAME[cc] || cc}</option>`).join('')}
       </select>
+    </div>
+    <div class="salary-leaders">
+      <div class="salary-leaders-title">HIGHEST SALARIES</div>
+      ${[...allStars].sort((a,b)=>(b.contract?.salary||0)-(a.contract?.salary||0)).slice(0,5).map((star,index)=>`<button onclick="window.openStarDetail('${star.id}')"><span>${index+1}</span><strong>${star.name}</strong><small>${star.teamName}</small><b>${fmtMoney(star.contract?.salary||0)}/yr</b></button>`).join('')}
     </div>
     <div class="star-grid">`
 
@@ -2320,7 +2554,7 @@ function renderStarsPlayers(allStars) {
         <span class="spacer"></span>
         <span class="years-left" title="Years remaining in career">⏳${Math.max(0, (s.lifespan || 0) - ((S.season || 1) - (s.season || 1)))}y</span>
       </div>
-      <div class="star-name">${s.name}</div>
+      <div class="star-name">${s.name}${s.historicLegend?'<span class="historic-name-mark">HISTORIC</span>':''}</div>
       <div class="star-team">
         <span title="${COUNTRY_NAME[nat] || nat}">${flag(nat)}</span>
         ${flag(s.teamCC)} ${s.teamName}
@@ -2332,6 +2566,7 @@ function renderStarsPlayers(allStars) {
         <span class="star-stat">⚽ <span>${s.goals || 0}</span></span>
         ${avgR ? `<span class="star-stat">★ <span>${avgR}</span></span>` : ''}
         <span class="star-stat">🥇 <span>${s.medals?.gold || 0}</span></span>
+        <span class="star-stat salary-stat">💵 <span>${fmtMoney(s.contract?.salary||0)}/yr</span></span>
       </div>
     </div>`
   })
@@ -2355,6 +2590,7 @@ function renderStarsCoaches(coaches) {
         <div class="coach-team">${flag(team?.cc || c.nationality || 'eu')} ${c.teamName}</div>
         <div style="font-size:10px;color:var(--txt2);margin-top:2px">${bonusStr}</div>
         ${c.trait ? `<div style="font-size:10px;color:var(--gold);margin-top:2px">✦ ${c.trait.name}</div>` : ''}
+        <div style="font-size:10px;color:var(--green);margin-top:2px">${fmtMoney(c.contract?.salary||0)}/year</div>
       </div>
       ${tierBadge(c.tier)}
     </div>`
@@ -2372,7 +2608,7 @@ window.setTeamSort = function (k) { teamSort = k; renderTeams(); parseEmoji(docu
 // ─────────────────────────────────────────────────────────────
 // HISTORY TAB — Teams / Players sub-tabs, with sortable columns.
 // ─────────────────────────────────────────────────────────────
-let historySubTab = 'teams'   // 'teams' | 'players'
+let historySubTab = 'seasons'   // seasons | domestic | teams | players | transfers
 let historyTeamSort = { col: 'titles', dir: 'desc' }
 let historyPlayerSort = { col: 'avgRating', dir: 'desc' }
 window.setHistorySubTab = function(k) { historySubTab = k; renderHistory(); parseEmoji(document.body) }
@@ -2396,99 +2632,116 @@ function renderHistory() {
   const el = $('tab-history')
   if (!el) return
 
-  // Build per-player career stats from the season-by-season log.
   const playerStats = {}
   S.history?.forEach(h => {
-    (h.stars || []).forEach(s => {
-      if (!playerStats[s.name]) {
-        playerStats[s.name] = {
-          name: s.name, pos: s.pos, tier: s.tier,
-          gold:0, silver:0, bronze:0,
-          offMVP:0, defMVP:0, topScorer:0,
+    ;(h.stars || []).forEach(star => {
+      const key = star.id || `${star.name}:${star.pos}`
+      if (!playerStats[key]) {
+        playerStats[key] = {
+          id:star.id, name:star.name, pos:star.pos, tier:star.tier,
+          gold:0, silver:0, bronze:0, offMVP:0, defMVP:0, topScorer:0,
           goals:0, games:0, participations:0, ratings:[],
         }
       }
-      const p = playerStats[s.name]
+      const p = playerStats[key]
       p.participations++
-      p.goals += (s.goals || 0)
-      p.games += (s.games || 0)
-      if (s.medals?.gold)   p.gold   += s.medals.gold
-      if (s.medals?.silver) p.silver += s.medals.silver
-      if (s.medals?.bronze) p.bronze += s.medals.bronze
-      if (s.avgRating)      p.ratings.push(s.avgRating)
-      if (h.awards?.topScorer?.name === s.name) p.topScorer++
-      if (h.awards?.offMVP?.name   === s.name) p.offMVP++
-      if (h.awards?.defMVP?.name   === s.name) p.defMVP++
+      p.goals += star.goals || 0
+      p.games += star.games || 0
+      p.gold += star.medals?.gold || 0
+      p.silver += star.medals?.silver || 0
+      p.bronze += star.medals?.bronze || 0
+      if (star.avgRating) p.ratings.push(star.avgRating)
+      if (h.awards?.topScorer?.name === star.name) p.topScorer++
+      if (h.awards?.offMVP?.name === star.name) p.offMVP++
+      if (h.awards?.defMVP?.name === star.name) p.defMVP++
     })
   })
   const playerList = Object.values(playerStats).map(p => ({
     ...p,
-    avgRating: p.ratings.length ? (p.ratings.reduce((a,b)=>a+b,0)/p.ratings.length) : 0,
+    avgRating:p.ratings.length ? p.ratings.reduce((a,b)=>a+b,0)/p.ratings.length : 0,
   }))
   const teamStatsList = Object.values(S.teamStats || {})
+  const transferCount = (S.transferHistory || []).length
 
-  // Sub-tab buttons.
-  const subBtn = (k, label, count) => `
-    <button class="sub-tab ${historySubTab===k?'active':''}" onclick="setHistorySubTab('${k}')">
-      ${label}${count!=null?` <span class="sub-tab-count">${count}</span>`:''}
-    </button>`
+  const subBtn = (key, label, count = null) => `<button class="sub-tab ${historySubTab===key?'active':''}" onclick="setHistorySubTab('${key}')">${label}${count!=null?` <span class="sub-tab-count">${count}</span>`:''}</button>`
 
-  // Season-by-season scroll on top.
-  let seasonsHTML = ''
-  if (S.history?.length) {
-    seasonsHTML = `<div class="sec">SEASON HISTORY</div>` + [...S.history].reverse().map(h => `
+  let body = ''
+  if (historySubTab === 'seasons') {
+    if (!S.history?.length) body = '<div class="empty">Complete a season to begin the archive.</div>'
+    else body = `<div class="sec">CHAMPIONS OF EUROPE BY YEAR</div>${[...S.history].reverse().map(h => `
       <div class="history-card">
-        <div class="history-season">SEASON ${h.season}</div>
+        <div class="history-season">${historyYear(h)} · ${h.era==='european_cup'?'EUROPEAN CUP':'CHAMPIONS LEAGUE'}</div>
         <div class="history-podium">
           <div class="history-podium-champ">
-            <div class="history-podium-trophy">🏆</div>
-            <div class="history-podium-label">CHAMPION</div>
-            <div class="history-podium-name">${flag(h.cc || '')} ${h.championName}</div>
+            <div class="history-podium-trophy">🏆</div><div class="history-podium-label">CHAMPION</div>
+            <div class="history-podium-name"><span class="team-name-link" onclick="window.openTeamDetail('${h.champion}')">${flag(h.cc||'')} ${h.championName}</span></div>
           </div>
-          ${h.runnerUpName ? `
-            <div class="history-podium-runner">
-              <div class="history-podium-runner-icon">🥈</div>
-              <div class="history-podium-label">RUNNER-UP</div>
-              <div class="history-podium-runner-name">${flag(h.runnerUpCC || '')} ${h.runnerUpName}</div>
-            </div>` : ''}
+          ${h.runnerUpName?`<div class="history-podium-runner"><div class="history-podium-runner-icon">🥈</div><div class="history-podium-label">FINALIST</div><div class="history-podium-runner-name"><span class="team-name-link" onclick="window.openTeamDetail('${h.runnerUpId}')">${flag(h.runnerUpCC||'')} ${h.runnerUpName}</span></div></div>`:''}
         </div>
         <div style="font-size:12px;color:var(--txt2);margin-top:8px">${h.totalGoals||0} goals · Top scorer: ${h.topScorers?.[0]?.[0] || '—'} (${h.topScorers?.[0]?.[1] || 0}⚽)</div>
-        ${h.awards?.offMVP ? `<div style="font-size:11px;color:var(--txt3)">🌟 ${h.awards.offMVP.name} Off MVP · 🛡️ ${h.awards.defMVP?.name || '—'} Def MVP</div>` : ''}
-        ${h.localChampions?.length ? `<details style="margin-top:6px">
-          <summary style="cursor:pointer;font-size:11px;color:var(--txt3)">Local champions →</summary>
-          <div style="font-size:11px;color:var(--txt2);margin-top:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:4px">
-            ${h.localChampions.map(lc => `<span>${flag(lc.cc)} ${lc.league}: <b>${lc.champion}</b></span>`).join('')}
-          </div>
-        </details>` : ''}
-      </div>`).join('')
-  }
-
-  // Body — pick which sub-tab to render.
-  let body = ''
-  const domesticRows = [...(S.history || [])].reverse().flatMap(h => (h.localChampions || []).map(c => ({ season:h.season, ...c })))
-  if (domesticRows.length) {
-    const byLeague = {}
-    domesticRows.forEach(r => { (byLeague[r.leagueName || r.leagueId || 'League'] ||= []).push(r) })
-    seasonsHTML += `<div class="sec">DOMESTIC WINNERS BY YEAR</div><div class="domestic-history-grid">${Object.entries(byLeague).map(([league,rows])=>`
-      <div class="card domestic-history-card"><div class="domestic-history-title">${league}</div>
-      <div class="domestic-history-list">${rows.slice(0,12).map(r=>`<div><span>Season ${r.season}</span><strong>${flag(r.cc||'')} ${r.teamName||r.championName||'—'}</strong></div>`).join('')}</div></div>`).join('')}</div>`
-  }
-
-  if (historySubTab === 'teams') {
+        ${h.awards?.offMVP?`<div style="font-size:11px;color:var(--txt3)">🌟 ${h.awards.offMVP.name} Off MVP · 🛡️ ${h.awards.defMVP?.name || '—'} Def MVP</div>`:''}
+      </div>`).join('')}`
+  } else if (historySubTab === 'domestic') {
+    body = renderDomesticWinnersHistory()
+  } else if (historySubTab === 'teams') {
     body = renderHistoryTeams(teamStatsList)
-  } else {
+  } else if (historySubTab === 'players') {
     body = renderHistoryPlayers(playerList)
+  } else if (historySubTab === 'transfers') {
+    body = renderTransferHistory()
   }
 
   el.innerHTML = `
-    ${seasonsHTML}
-    <div class="sub-tab-row" style="margin-top:14px">
-      ${subBtn('teams',   '📊 Teams',   teamStatsList.length || null)}
-      ${subBtn('players', '⭐ Players', playerList.length || null)}
+    <div class="sub-tab-row history-tab-row">
+      ${subBtn('seasons','🏆 Europe',S.history?.length||null)}
+      ${subBtn('domestic','🏠 Winners by year',S.history?.length||null)}
+      ${subBtn('teams','📊 Teams',teamStatsList.length||null)}
+      ${subBtn('players','⭐ Players',playerList.length||null)}
+      ${subBtn('transfers','💰 Transfers',transferCount||null)}
     </div>
     ${body}`
 }
 
+function renderDomesticWinnersHistory() {
+  const major = [
+    { id:'ENG', name:'England' }, { id:'ESP', name:'Spain' },
+    { id:'ITA', name:'Italy' }, { id:'GER', name:'Germany' },
+    { id:'FRA', name:'France' }, { id:'POR', name:'Portugal' },
+    { id:'NED', name:'Netherlands' },
+  ]
+  if (!S.history?.length) return '<div class="empty">No domestic winners recorded yet.</div>'
+  const findLeague = (h, league) => (h.localChampions || []).find(x => x.leagueId === league.id || x.league === league.name || x.leagueName === league.name)
+  return `<div class="sec">WINNERS BY YEAR</div>
+    <div class="history-intro">Champion and runner-up for the seven most relevant domestic leagues. Scroll horizontally on mobile.</div>
+    <div class="table-wrap domestic-winners-wrap"><table class="data-table domestic-winners-table">
+      <thead><tr><th>Year</th>${major.map(l=>`<th>${l.name}</th>`).join('')}</tr></thead>
+      <tbody>${[...S.history].reverse().map(h=>`<tr><td class="num"><strong>${historyYear(h)}</strong></td>${major.map(league=>{
+        const row=findLeague(h,league)
+        if(!row) return '<td>—</td>'
+        const champion=row.championName||row.champion||'—'
+        const runner=row.runnerUpName||row.runnerUp||'—'
+        return `<td><div class="domestic-cell"><button onclick="window.openTeamDetail('${row.championId||''}')"><span>🏆</span><span><em>Champion</em><strong>${champion}</strong></span></button><button class="runner" ${row.runnerUpId?`onclick="window.openTeamDetail('${row.runnerUpId}')"`:''}><span>🥈</span><span><em>Runner-up</em><small>${runner}</small></span></button></div></td>`
+      }).join('')}</tr>`).join('')}</tbody>
+    </table></div>`
+}
+
+function renderTransferHistory() {
+  const rows = [...(S.transferHistory || [])].sort((a,b)=>(b.fee||0)-(a.fee||0))
+  if (!rows.length) return '<div class="empty">No permanent transfers recorded yet.</div>'
+  return `<div class="sec">MOST EXPENSIVE TRANSFERS</div>
+    <div class="history-intro">Permanent moves are ranked by fee. A player cannot be transferred in consecutive seasons.</div>
+    <div class="table-wrap"><table class="data-table transfer-history-table"><thead><tr>
+      <th>#</th><th>Player</th><th>Tier</th><th class="num">Year</th><th>From</th><th>To</th><th class="num">Fee</th><th class="num">Salary</th>
+    </tr></thead><tbody>${rows.map((tr,index)=>`<tr>
+      <td class="num">${index+1}</td>
+      <td><button class="history-player-link" onclick="window.openStarDetail('${tr.playerId}')"><strong>${tr.playerName}</strong><small>${tr.pos||''}${tr.age?` · age ${tr.age}`:''}</small></button></td>
+      <td>${tierBadge(tr.tier)}</td><td class="num">${tr.year || yearForSeason(tr.season)}</td>
+      <td><span class="team-name-link" onclick="window.openTeamDetail('${tr.fromId}')">${flag(tr.fromCC||'')} ${tr.from}</span></td>
+      <td><span class="team-name-link" onclick="window.openTeamDetail('${tr.toId}')">${flag(tr.toCC||'')} ${tr.to}</span></td>
+      <td class="num transfer-fee"><strong>${fmtMoney(tr.fee)}</strong></td>
+      <td class="num">${fmtMoney(tr.salary||0)}/yr</td>
+    </tr>`).join('')}</tbody></table></div>`
+}
 function renderHistoryTeams(teamStatsList) {
   if (!teamStatsList.length) return '<div class="empty">No team records yet</div>'
   const cols = [
@@ -2610,12 +2863,12 @@ function renderSeason() {
   }
 
   el.innerHTML = `
-    <div style="font-family:var(--font-head);font-size:11px;letter-spacing:.14em;color:var(--txt3);margin-bottom:6px">SEASON ${S.season || 1}</div>
+    <div style="font-family:var(--font-head);font-size:11px;letter-spacing:.14em;color:var(--txt3);margin-bottom:6px">YEAR ${gameYear()}</div>
     <div class="sub-tab-row">
       ${subBtn('stats',  '📊 Stats',          teamsKnown || null)}
       ${subBtn('local',  '🏆 Local Leagues', llCount || null)}
       ${subBtn('market', '🔄 Market',        mktCount || null)}
-      ${subBtn('cl',     '⚽ Champions League', matchesPlayed || null)}
+      ${subBtn('cl',     S.era==='european_cup'?'⚽ European Cup':'⚽ Champions League', matchesPlayed || null)}
     </div>
     ${body}`
 }
@@ -2902,7 +3155,7 @@ async function renderSaveSlots() {
       <div class="save-slot save-slot-auto">
         <div class="save-slot-info">
           <div class="save-slot-name">⚡ Autosave</div>
-          <div class="save-slot-meta">Season ${auto.season} · ${detail} · saved ${when}</div>
+          <div class="save-slot-meta">${auto.year || yearForSeason(auto.season)} · ${detail} · saved ${when}</div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="doLoadAuto()">Load</button>
       </div>`
@@ -2920,7 +3173,7 @@ async function renderSaveSlots() {
           <div class="save-slot">
             <div class="save-slot-info">
               <div class="save-slot-name">${s.slotName}</div>
-              <div class="save-slot-meta">Season ${s.season} · ${detail} · saved ${when}</div>
+              <div class="save-slot-meta">${s.year || yearForSeason(s.season)} · ${detail} · saved ${when}</div>
             </div>
             <button class="btn btn-primary btn-sm" onclick="doLoadSlot('${safe}')">Load</button>
             <button class="btn btn-sm btn-danger-subtle" onclick="doDeleteSlot('${safe}')" title="Delete this save">🗑</button>
@@ -2956,7 +3209,7 @@ window.doLoadAuto = async function () {
   if (!ok) { toast('Autosave not found', 'error'); return }
   updatePhaseUI()
   renderPlay()
-  toast('Autosave loaded — Season ' + (S.season || 1))
+  toast('Autosave loaded — ' + gameYear())
 }
 
 window.doLoadSlot = async function (name) {
@@ -2995,7 +3248,7 @@ window.doImport = async function (ev) {
     closeSettings()
     updatePhaseUI()
     renderPlay()
-    toast('Imported — now in Season ' + (S.season || 1))
+    toast('Imported — now in ' + gameYear())
   } catch (e) {
     toast('Import failed: ' + e.message, 'error')
   }
@@ -3148,7 +3401,7 @@ async function showHomePage() {
     return `
       <div class="home-slot home-slot-active" onclick="window.continueSlot('${s.key}')">
         <div class="home-slot-num">SLOT ${num}</div>
-        <div class="home-slot-season">SEASON ${s.season}</div>
+        <div class="home-slot-season">${s.year || (1955 + (s.season || 1))}</div>
         ${s.championName ? `
           <div class="home-slot-champ">
             <div class="home-slot-champ-trophy">🏆</div>

@@ -1,14 +1,31 @@
 import { S, autoSave } from '../store.js'
 import { LEAGUES, LEAGUE_TEAMS, ALL_TEAMS } from '../data/teams.js'
+import { HISTORIC_LEGENDS } from '../data/legends.js'
 import { simMatch, rand, clamp, pick, shuffle, gaussRand, ovr, getEffStats } from './match.js'
 import {
   genNameForCC, genCoachName, pickPlayerNationality, COUNTRY_NAME
 } from '../data/players.js'
+import {
+  PLAYER_BASE_SALARY, COACH_BASE_SALARY,
+  ensureClubFinance, annualIncome, baseSpend, baseSquadSalary, operatingCosts,
+  teamAnnualSalary, teamStarSalary, teamCoachSalary, projectedAnnualSurplus,
+  playerSalaryDemand, coachSalaryDemand, playerMarketValue, freeAgentSigningBonus,
+  playerAge, financeSnapshot, addTreasury, setTreasury,
+  effectiveMoney as financeEffectiveMoney,
+} from './finance.js'
+
+export {
+  annualIncome, baseSpend, baseSquadSalary, operatingCosts,
+  teamAnnualSalary, teamStarSalary, teamCoachSalary, projectedAnnualSurplus,
+  playerMarketValue, playerAge, financeSnapshot,
+}
 
 // ── Tier helpers ─────────────────────────────────────────────
 export const tierOf = f => f>=5000?'generational':f>=2000?'legendary':f>=800?'epic':f>=300?'rare':f>=80?'uncommon':'common'
 export const tierLabel = t => ({generational:'Generational',legendary:'Legendary',epic:'Epic',rare:'Rare',uncommon:'Uncommon',common:'Common'})[t]||t
 export const tierColor = t => ({generational:'#e91e63',legendary:'#ff9800',epic:'#9c27b0',rare:'#2196f3',uncommon:'#4caf50',common:'#6a7a9a'})[t]||'#6a7a9a'
+
+export const currentCalendarYear = () => Number(S.year) || (1955 + (S.season || 1))
 
 // Rarity distribution: 0.5% generational, 5% legendary (was 2%),
 // Tier probabilities for a fresh-spawned star. Tuned so a world of
@@ -27,16 +44,18 @@ function rollTier() {
   return 'common'
 }
 
-// Count active generational stars across all teams + FA pool.
-// Used to enforce the world cap (max 2 at any time).
-function countGenerationalsInWorld() {
+// Count active premium stars across all teams + free agency. Named
+// historical players count against the same world caps as generated ones.
+function countTierInWorld(tier) {
   let n = 0
   ;(S.allTeams || []).forEach(t => {
-    for (const s of (t.stars || [])) if (s.tier === 'generational') n++
+    for (const s of (t.stars || [])) if (s.tier === tier) n++
   })
-  for (const s of (S.freeAgents?.stars || [])) if (s.tier === 'generational') n++
+  for (const s of (S.freeAgents?.stars || [])) if (s.tier === tier) n++
   return n
 }
+function countGenerationalsInWorld() { return countTierInWorld('generational') }
+function countLegendariesInWorld() { return countTierInWorld('legendary') }
 
 // ── Career arc ───────────────────────────────────────────────
 // Players ramp into their potential and ramp out before retirement:
@@ -48,6 +67,11 @@ function countGenerationalsInWorld() {
 // and re-computed every offseason so getEffStats can read it cheaply.
 export function computeCareerMult(star, currentSeason) {
   const age = (currentSeason || S.season || 1) - (star.season || 1)
+  if (star?.historicLegend) {
+    if (age <= 0) return 0.90
+    if (age >= (star.lifespan || 9) - 1) return 0.90
+    return 1.00
+  }
   if (age <= 1) return 0.80
   if (age === 2) return 0.90
   const lifespan = star.lifespan || 10
@@ -66,103 +90,31 @@ export function refreshCareerMults() {
   for (const s of (S.freeAgents?.stars || [])) s.careerMult = computeCareerMult(s, cs)
 }
 
-// ── Economy constants ────────────────────────────────────────
-// Each rarity has a salary (paid annually while contracted), a
-// signing fee (paid once when joining a club via transfer, NOT
-// when renewing), and a sale value (received by the SELLING club
-// when a player is bought by another). Commons can only be signed
-// as free agents — they have no signing fee or transfer value.
-//
-// Per-tier economy (tuned via parameter sweep):
-//   Gen $10 fee / $5 salary, Leg $7/$4, Epic $4/$3,
-//   Rare $4/$2, Uncommon $2/$1, Common $0/$1.
-// Sale value = round(signFee / 2).
-export const RARITY_ECON = {
-  generational: { salary: 5, signFee: 10, saleValue: 5 },
-  legendary:    { salary: 4, signFee:  7, saleValue: 3 },
-  epic:         { salary: 3, signFee:  4, saleValue: 2 },
-  rare:         { salary: 2, signFee:  4, saleValue: 2 },
-  uncommon:     { salary: 1, signFee:  2, saleValue: 1 },
-  common:       { salary: 1, signFee:  0, saleValue: 0 },
-}
+// ── Economy model ───────────────────────────────────────────
+// Finances use realistic €/$-million scale: recurring club revenue,
+// base-squad payroll, operating costs, named-star/coach wages, and a
+// persistent treasury. Transfer fees and wages are calculated from
+// tier, age, source-club strength, contract length, and happiness.
+// The detailed formulas live in finance.js so they can be reused by
+// the UI and by long-run balance tests.
+export const RARITY_ECON = Object.fromEntries(
+  Object.entries(PLAYER_BASE_SALARY).map(([tier, salary]) => [tier, { salary }])
+)
 
-// Champion penalty: -2M cash on hand for the winner of the CL.
-// Anti-dynasty mechanic.
-export const CHAMPION_PENALTY = 2
-
-// Base spend — reads from ECON.baseSpend table (mutable for sweeps).
-export const BASE_SPEND = 3
-export function baseSpend(team) {
-  const m = effectiveMoney(team)
-  return ECON.baseSpend[m] ?? 3
-}
-
-// Annual income — reads from ECON.income table (mutable for sweeps).
-export function annualIncome(team) {
-  const m = effectiveMoney(team)
-  return ECON.income[m] ?? m
-}
-
-// Total salary the team owes per year (sum of star + coach salaries
-// for those still under contract).
-export function teamAnnualSalary(team) {
-  let s = 0
-  for (const star of team.stars || []) {
-    if (!star.contract || star.contract.yearsLeft <= 0) continue
-    s += RARITY_ECON[star.tier]?.salary || 0
-  }
-  const coach = (S.coaches || []).find(c => c.teamId === team.id)
-  if (coach?.contract && coach.contract.yearsLeft > 0) {
-    s += RARITY_ECON[coach.tier]?.salary || 0
-  }
-  return s
-}
-
-// Splurge bonus: a top-tier club ($12M+ effective money) with
-// fewer than 3 premium stars and surplus cash spends $5M for a
-// +5 boost to all team stats next season. Threshold lowered from
-// v6.3's $13M because absolute cash is now lower across the board.
-export const SPLURGE_THRESHOLD = 8
-export const SPLURGE_COST = 5
-export const SPLURGE_BOOST = 5
-
-// Cash on hand hard ceiling. Anything above this at the end of an
-// offseason is burned as "owner takeout / unused operating
-// budget". Prevents perpetual hoarding by clubs that can't find
-// targets to spend on.
-export const CASH_CAP = 25
-
-// ── Tunable economy parameters (mutable for sweep harness) ──
-// All numeric levers in one place. runMarket reads from here, so
-// the parameter-sweep test can write into ECON and re-run without
-// reloading the module.
 export const ECON = {
-  // Income & base spend per money tier (5→18 inclusive).
-  // Income = team.money exactly. Base spend = $1 flat.
-  income:    { 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11, 12:12, 13:13, 14:14, 15:15, 16:16, 17:17, 18:18 },
-  baseSpend: { 5:1, 6:1, 7:1, 8:1, 9:1, 10:1,  11:1,  12:1,  13:1,  14:1,  15:1,  16:1,  17:1,  18:1  },
-
-  // Decay: stat loses round(coef × (stat - 60)) + random[-wig, +wig].
-  // Higher coef → harder to maintain high stats.
-  decayCoef:   0.4,
+  decayCoef: 0.34,
   decayWiggle: 1,
-
-  // Investment yield (flat): $1M → yieldFlat points per stat,
-  // capped at 90. Higher = faster growth.
-  yieldFlat: 2,
-  yieldCoef: 0.125,           // (legacy, unused with flat yield)
-
-  // Willingness: random in [min, max] of cash goes to investment.
-  investMin: 0.4,
-  investMax: 0.7,
+  investmentPointCost: 18,
+  investMin: 0.45,
+  investMax: 0.75,
 }
-
 
 // Generational cap: world maintains 1-3 Generational stars at a
 // time. Hard cap of 3 enforced in genStar; soft floor of 1 enforced
 // by forced-spawn at end of rookie phase in runMarket.
-export const GENERATIONAL_CAP_MAX = 3
+export const GENERATIONAL_CAP_MAX = 2
 export const GENERATIONAL_CAP_MIN = 1
+export const LEGENDARY_CAP_MAX = 8
 
 // Happiness thresholds for each tier (out of 100). A player's
 // happiness must reach this value for them to want to stay with
@@ -223,10 +175,16 @@ export function computeHappiness(entity, teamId) {
   return Math.round(0.67 * lastScore + 0.33 * priorScore)
 }
 
-// Roll a fresh contract — yearsLeft in 3..6 inclusive.
-function rollContract(signedSeason) {
-  const years = rand(3, 6)
-  return { yearsLeft: years, yearsTotal: years, signedSeason }
+// Roll a fresh contract. Named-player wages live on the contract so
+// salary history survives future tier and finance-model changes.
+function rollContract(signedSeason, entity = null, team = null, happiness = 70, yearsOverride = null) {
+  const years = yearsOverride || rand(3, 6)
+  const salary = entity
+    ? (entity.pos
+      ? playerSalaryDemand(entity, team, happiness, signedSeason)
+      : coachSalaryDemand(entity, team, happiness, signedSeason))
+    : 0
+  return { yearsLeft: years, yearsTotal: years, signedSeason, salary }
 }
 
 // Set up initial contracts for any star/coach who doesn't have
@@ -235,28 +193,32 @@ function rollContract(signedSeason) {
 export function ensureContracts() {
   const startingSeason = S.season || 1
   ;(S.allTeams || []).forEach(t => {
-    (t.stars || []).forEach(s => {
-      if (!s.contract) {
+    ensureClubFinance(t)
+    ;(t.stars || []).forEach(star => {
+      if (!star.contract) {
         const total = rand(3, 6)
-        s.contract = {
-          yearsLeft: rand(1, total),
-          yearsTotal: total,
-          signedSeason: startingSeason - (total - rand(1, total)),
-        }
+        const yearsLeft = rand(1, total)
+        star.contract = rollContract(startingSeason - (total - yearsLeft), star, t, 70, total)
+        star.contract.yearsLeft = yearsLeft
+      } else if (typeof star.contract.salary !== 'number') {
+        star.contract.salary = playerSalaryDemand(star, t, computeHappiness(star, t.id) || 70, startingSeason)
       }
+      if (typeof star.debutAge !== 'number') star.debutAge = 18
     })
   })
-  ;(S.coaches || []).forEach(c => {
-    if (!c.contract) {
+  ;(S.coaches || []).forEach(coach => {
+    const team = (S.allTeams || []).find(t => t.id === coach.teamId)
+    if (!coach.contract) {
       const total = rand(3, 6)
-      c.contract = {
-        yearsLeft: rand(1, total),
-        yearsTotal: total,
-        signedSeason: startingSeason - (total - rand(1, total)),
-      }
+      const yearsLeft = rand(1, total)
+      coach.contract = rollContract(startingSeason - (total - yearsLeft), coach, team, 70, total)
+      coach.contract.yearsLeft = yearsLeft
+    } else if (typeof coach.contract.salary !== 'number') {
+      coach.contract.salary = coachSalaryDemand(coach, team, computeHappiness(coach, coach.teamId) || 70, startingSeason)
     }
   })
 }
+
 
 
 // ── Stat bonuses by position × rarity ────────────────────────
@@ -501,8 +463,8 @@ export function describeStarSkills(star) {
 
   // Contract + salary.
   if (star.contract) {
-    const sal = RARITY_ECON[star.tier]?.salary || 0
-    lines.push(`📜 Contract: ${star.contract.yearsLeft}/${star.contract.yearsTotal} yr · ${sal}M/yr`)
+    const sal = star.contract.salary ?? PLAYER_BASE_SALARY[star.tier] ?? 0
+    lines.push(`📜 Contract: ${star.contract.yearsLeft}/${star.contract.yearsTotal} yr · $${Number(sal).toFixed(1)}M/yr`)
   }
 
   // Career stage (rookie / sophomore / prime / farewell).
@@ -538,7 +500,7 @@ export function getStarSkillData(star) {
   const contract = star.contract ? {
     yearsLeft: star.contract.yearsLeft,
     yearsTotal: star.contract.yearsTotal,
-    salary: RARITY_ECON[star.tier]?.salary || 0,
+    salary: star.contract.salary ?? PLAYER_BASE_SALARY[star.tier] ?? 0,
   } : null
   let careerStage = null
   const mult = typeof star.careerMult === 'number' ? star.careerMult : 1.0
@@ -618,11 +580,10 @@ export function runStatsUpdate() {
   })
 }
 
-// Effective money for a team — base money + GM bonus, capped at 14.
+// Effective sporting resources still use the original compact team
+// rating scale. Financial revenue is calculated separately in finance.js.
 export function effectiveMoney(team) {
-  const base = team.money || 6
-  const gmBonus = team.gm?.moneyBonus || 0
-  return clamp(base + gmBonus, 5, 18)
+  return financeEffectiveMoney(team)
 }
 
 // Build the per-match `stats` object from the team's seasonStats. This
@@ -665,28 +626,27 @@ const POSITIONS = ['FWD','FWD','FWD','MID','MID','GK','DEF']
 export function genStar(team, forceTier = null) {
   const nationality = pickPlayerNationality(team.cc)
   let tier = forceTier || rollTier()
-  // Hard cap of 3 Generational players in the world.
-  // If a roll comes up Gen but the cap is reached, downgrade to Legendary.
-  // (forceTier bypasses this — used to enforce the floor of 1.)
   if (!forceTier && tier === 'generational' && countGenerationalsInWorld() >= GENERATIONAL_CAP_MAX) {
     tier = 'legendary'
+  }
+  if (!forceTier && tier === 'legendary' && countLegendariesInWorld() >= LEGENDARY_CAP_MAX) {
+    tier = 'epic'
   }
   const pos = pick(POSITIONS)
   const statBonus = STAT_BONUSES[pos]?.[tier] || {}
   const goalDist  = GOAL_DIST[pos]?.[tier] || [1,0,0,0,0]
   const saveProb  = SAVE_PROB[pos]?.[tier] || 0
   const trait     = pickStarTrait(pos, tier)
-  // Generational players live a touch longer — they earn the "career
-  // arc" treatment.
   const lifespan  = tier === 'generational' ? rand(11, 15) : rand(8, 12)
   const currentSeason = S.season || 1
-  return {
+  const star = {
     id: `s_${team.id}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
     name: genNameForCC(nationality),
     nationality,
     pos, tier,
     teamId: team.id, teamName: team.name, cc: team.cc,
     season: currentSeason,
+    debutAge: 18,
     lifespan,
     goals: 0, ratings: [], wcsPlayed: 0, fame: 0,
     medals: { gold:0, silver:0, bronze:0 },
@@ -694,9 +654,13 @@ export function genStar(team, forceTier = null) {
     goalDist,
     saveProb,
     trait,
-    contract: rollContract(currentSeason),
+    lastTransferSeason: null,
+    contract: null,
   }
+  star.contract = rollContract(currentSeason, star, team, 75)
+  return star
 }
+
 
 // ── Coach skills by rarity ────────────────────────────────────
 // Common / uncommon / rare coaches just add stats. Epic and
@@ -838,8 +802,8 @@ export function describeCoachSkills(coach) {
     lines.push(`✦ ${coach.trait.name}: ${coach.trait.description}`)
   }
   if (coach.contract) {
-    const sal = RARITY_ECON[coach.tier]?.salary || 0
-    lines.push(`📜 Contract: ${coach.contract.yearsLeft}/${coach.contract.yearsTotal} yr · ${sal}M/yr`)
+    const sal = coach.contract?.salary ?? COACH_BASE_SALARY[coach.tier] ?? 0
+    lines.push(`📜 Contract: ${coach.contract.yearsLeft}/${coach.contract.yearsTotal} yr · $${Number(sal).toFixed(1)}M/yr`)
   }
   return lines
 }
@@ -848,7 +812,7 @@ export function genCoach(team) {
   const tier = rollCoachTier()
   const trait = (tier === 'legendary' || tier === 'epic') ? pickCoachTrait(tier) : null
   const currentSeason = S.season || 1
-  return {
+  const coach = {
     id: `coach_${team.id}_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
     name: genCoachName(team.cc),
     nationality: team.cc,
@@ -857,10 +821,13 @@ export function genCoach(team) {
     season: currentSeason,
     lifespan: rand(5, 12),
     statBonus: COACH_BONUSES[tier],
-    trait,             // legendary / epic only
-    contract: rollContract(currentSeason),
+    trait,
+    contract: null,
   }
+  coach.contract = rollContract(currentSeason, coach, team, 70)
+  return coach
 }
+
 
 // ── GM / Director traits ─────────────────────────────────────
 // Power-2 abilities for epic/legendary GMs. Effects (other than
@@ -1001,7 +968,7 @@ export function describeGMSkills(gm) {
     .map(([k,v]) => `+${v} ${k.toUpperCase().slice(0,3)}`)
     .join(', ')
   if (statBits) lines.push(statBits)
-  if (gm.moneyBonus > 0) lines.push(`+${gm.moneyBonus}M annual income`)
+  if (gm.moneyBonus > 0) lines.push(`+${(gm.moneyBonus * 0.8).toFixed(1)}% commercial revenue`)
   if (gm.trait) lines.push(`✦ ${gm.trait.name}: ${gm.trait.description}`)
   lines.push(`Tenure: ${gm.tenureLeft}/${gm.tenureTotal} years remaining`)
   return lines
@@ -1017,7 +984,7 @@ export function initStarsAndCoaches() {
   // finds every team empty and fills exactly one academy graduate +
   // one new manager per team).
   if (!S.allTeams) {
-    S.allTeams = ALL_TEAMS.map(t => ({ ...t, stars: [], coachId: null, cashOnHand: 0 }))
+    S.allTeams = ALL_TEAMS.map(t => ({ ...t, stars: [], coachId: null, treasury: 0, cashOnHand: 0 }))
   }
   S.coaches = S.coaches || []
 
@@ -1069,7 +1036,9 @@ export function linkStarsToTeams() {
     team.coach = S.coaches?.find(c => c.teamId === team.id) || null
     team.gm    = allTeam.gm || null     // mirror GM onto qualified-team object
     team.money = allTeam.money          // and money / cashOnHand for UI access
+    team.treasury = allTeam.treasury
     team.cashOnHand = allTeam.cashOnHand
+    team.financeProfile = allTeam.financeProfile
     team.splurgeActive = !!allTeam.splurgeActive  // mirror the +5 stat boost
     team.colors = allTeam.colors                // mirror the team colors
   })
@@ -1168,50 +1137,33 @@ export function runLocalLeagues() {
   return leagueResults
 }
 
-// Build the 32-team Champions League roster from local-league outcomes.
-export function runQualification() {
-  // Compute the local leagues first.
-  if (!S.localLeagueResults) runLocalLeagues()
-
-  const qualified = []
-  LEAGUES.forEach(L => {
-    const r = S.localLeagueResults[L.id]
-    if (!r) return
-    r.qualified.forEach((t, idx) => qualified.push({ team:t, league:L, isChampion: idx === 0 }))
-  })
-
-  const buildTeam = (entry) => {
-    const t = entry.team
-    // CRITICAL: t is from teams.js (the static data), which doesn't
-    // carry the per-season `seasonStats` we generated in
-    // runStatsUpdate(). Look that up on the LIVE allTeams entry.
-    const live = S.allTeams?.find(at => at.id === t.id) || t
-    const stats = live.seasonStats ? { ...live.seasonStats } : buildStats(live)
-    const overall = Math.round(
-      (stats.attack + stats.defense + stats.stamina + stats.mental + stats.setPieces) / 5
-    )
-    return {
-      ...t,
-      stats,                              // live numbers used by getEffStats
-      seasonStats: stats,                 // mirror — preview/UI reads either name
-      currentOverall: overall,            // for tiebreakers and Teams view
-      lastSeasonOverall: live.lastSeasonOverall || 0,  // for UI
-      rating: overall,                    // legacy alias kept for any old code paths
-      hist: histPts(t.id),
-      isLocalChampion: entry.isChampion,
-      leagueId: entry.league.id,
-      leagueName: entry.league.name,
-      pts:0, w:0, d:0, l:0, gf:0, ga:0, gd:0,
-      // Tournament mentality: starts at 0 delta (so effective = 60
-      // baseline + 0). Updates after every match based on result vs
-      // expected. Persists through groups and knockout. Resets each
-      // season when runQualification is called fresh.
-      mentalityDelta: 0,
-      star:null, coach:null,
-    }
+// Build the tournament roster from local-league outcomes. The historic
+// European Cup uses 16 clubs and a pure knockout bracket; the modern era
+// keeps the existing 32-team group-stage qualification.
+function buildQualifiedTeam(entry) {
+  const t = entry.team
+  const live = S.allTeams?.find(at => at.id === t.id) || t
+  const stats = live.seasonStats ? { ...live.seasonStats } : buildStats(live)
+  const overall = Math.round((stats.attack + stats.defense + stats.stamina + stats.mental + stats.setPieces) / 5)
+  return {
+    ...t,
+    stats,
+    seasonStats: stats,
+    currentOverall: overall,
+    lastSeasonOverall: live.lastSeasonOverall || 0,
+    rating: overall,
+    hist: histPts(t.id),
+    isLocalChampion: !!entry.isChampion,
+    isDefendingChampion: !!entry.isDefendingChampion,
+    leagueId: entry.league?.id || t.league,
+    leagueName: entry.league?.name || t.league,
+    pts:0, w:0, d:0, l:0, gf:0, ga:0, gd:0,
+    mentalityDelta:0,
+    star:null, coach:null,
   }
+}
 
-  S.teams = qualified.map(buildTeam).slice(0, 32)
+function resetTournamentState() {
   S.roundReached = {}
   S.teamGoals = {}
   S.teamGoalsConceded = {}
@@ -1221,13 +1173,102 @@ export function runQualification() {
   S.allMatchResults = []
   S.scorers = {}
   S.seasonAwards = {}
+  S.groups = []
+  S.groupMatches = []
+  S.knockoutRounds = []
+}
 
-  // Bump participation count.
+function effectiveOverallForTeam(team) {
+  const live = S.allTeams?.find(t => t.id === team.id) || team
+  const eff = getEffStats(live)
+  return Math.round((eff.attack + eff.defense + eff.stamina + eff.mental + eff.setPieces) / 5)
+}
+
+function classicQualificationEntries() {
+  const entries = []
+  const seen = new Set()
+  const add = (team, league, extra={}) => {
+    if (!team || seen.has(team.id)) return
+    seen.add(team.id)
+    entries.push({ team, league, ...extra })
+  }
+
+  const lastChampionId = [...(S.history || [])].reverse().find(h => h.champion)?.champion || null
+  if (lastChampionId) {
+    const defending = S.allTeams?.find(t => t.id === lastChampionId)
+    const league = LEAGUES.find(l => l.id === defending?.league)
+    add(defending, league, { isDefendingChampion:true, isChampion:false, protected:true })
+  }
+
+  // Every national champion enters. This automatically adds the champion
+  // from the defending holder's country if the holder did not retain it.
+  LEAGUES.forEach(L => {
+    const r = S.localLeagueResults?.[L.id]
+    const champion = r?.standings?.[0]?.team || r?.qualified?.[0]
+    add(champion, L, { isChampion:true, protected:true })
+  })
+
+  // Fill vacancies with the strongest runners-up from the major leagues.
+  const leaguePriority = { ENG:9, ESP:9, ITA:8, GER:8, FRA:6, POR:5, NED:5, SCO:3, TUR:3, RUS:3, UKR:3, GRE:2, ROE:2 }
+  const runners = []
+  LEAGUES.forEach(L => {
+    const standings = S.localLeagueResults?.[L.id]?.standings || []
+    standings.slice(1).forEach((row, index) => runners.push({
+      team:row.team, league:L, isChampion:false,
+      score:(leaguePriority[L.id] || 1) * 100 + effectiveOverallForTeam(row.team) - index * 4,
+    }))
+  })
+  runners.sort((a,b) => b.score - a.score)
+  for (const entry of runners) {
+    if (entries.length >= 16) break
+    add(entry.team, entry.league, entry)
+  }
+
+  // Future data expansions may create more than 16 champions. The hidden
+  // preliminary round is represented by retaining protected clubs first,
+  // then selecting the strongest remaining sides.
+  if (entries.length > 16) {
+    const protectedEntries = entries.filter(e => e.protected)
+    const others = entries.filter(e => !e.protected).sort((a,b) => effectiveOverallForTeam(b.team) - effectiveOverallForTeam(a.team))
+    return [...protectedEntries, ...others].slice(0,16)
+  }
+  return entries.slice(0,16)
+}
+
+export function runQualification() {
+  if (!S.localLeagueResults) runLocalLeagues()
+  let qualified = []
+
+  if (S.era === 'european_cup') {
+    qualified = classicQualificationEntries()
+  } else {
+    LEAGUES.forEach(L => {
+      const r = S.localLeagueResults[L.id]
+      if (!r) return
+      r.qualified.forEach((t, idx) => qualified.push({ team:t, league:L, isChampion:idx===0 }))
+    })
+    qualified = qualified.slice(0,32)
+  }
+
+  S.teams = qualified.map(buildQualifiedTeam)
+  resetTournamentState()
   S.teams.forEach(t => {
     if (S.teamStats?.[t.id]) S.teamStats[t.id].participations++
   })
-
   linkStarsToTeams()
+}
+
+// Historic draw: sixteen teams, no seeding and no country protection.
+// The entire tournament is visible as a bracket from the beginning.
+export function buildClassicBracket() {
+  const teams = shuffle([...S.teams])
+  const matches = []
+  for (let i=0; i<teams.length; i+=2) {
+    if (teams[i] && teams[i+1]) matches.push({ t1:teams[i], t2:teams[i+1], played:false, result:null })
+  }
+  S.groups = []
+  S.groupMatches = []
+  S.knockoutRounds = [{ name:'Round of 16', matches }]
 }
 
 // ── Group draw (8 groups of 4) ────────────────────────────────
@@ -1725,6 +1766,17 @@ function finalizeSeasonStats() {
     if (S.coachStats[champCoach.id]) S.coachStats[champCoach.id].localTitles++
   })
 
+  const localFinishByTeam = {}
+  Object.values(S.localLeagueResults || {}).forEach(result => {
+    ;(result.standings || []).forEach((entry, index) => {
+      localFinishByTeam[entry.team.id] = {
+        localPosition: index + 1,
+        localLeagueId: result.league.id,
+        localLeagueName: result.league.name,
+      }
+    })
+  })
+
   const teamSeasons = S.teams.map(t => {
     const stars = (t.stars && t.stars.length ? t.stars : (t.star ? [t.star] : []))
     const fs = fullStats[t.id] || { w:0, d:0, l:0, gf:0, ga:0 }
@@ -1733,7 +1785,8 @@ function finalizeSeasonStats() {
       teamName: t.name,
       cc: t.cc,
       overall: t.currentOverall || 0,
-      reached: S.roundReached[t.id] || 'Group',
+      reached: S.roundReached[t.id] || (S.era === 'european_cup' ? 'Round of 16' : 'Group'),
+      ...(localFinishByTeam[t.id] || {}),
       played: fs.w + fs.d + fs.l,
       wins:   fs.w,
       draws:  fs.d,
@@ -1755,6 +1808,7 @@ function finalizeSeasonStats() {
       cc: t.cc,
       overall: t.currentOverall || 0,
       reached: 'DNQ',
+      ...(localFinishByTeam[t.id] || {}),
       coach: coach ? { id: coach.id, name: coach.name, tier: coach.tier } : null,
       stars: stars.map(s => ({ id: s.id, name: s.name, pos: s.pos, tier: s.tier })),
     }
@@ -1763,6 +1817,8 @@ function finalizeSeasonStats() {
   S.history = S.history || []
   S.history.push({
     season: S.season,
+    year: currentCalendarYear(),
+    era: S.era || 'champions_league',
     champion: S.champion.id,
     championName: S.champion.name,
     cc: S.champion.cc,
@@ -1774,10 +1830,16 @@ function finalizeSeasonStats() {
     totalGoals: Object.values(S.teamGoals||{}).reduce((a,b)=>a+b, 0),
     awards: { ...S.seasonAwards },
     localChampions: Object.values(S.localLeagueResults || {}).map(r => ({
+      leagueId: r.league.id,
       league: r.league.name,
+      leagueName: r.league.name,
       cc: r.league.cc,
-      champion: r.qualified[0]?.name || '—',
-      championId: r.qualified[0]?.id || null,
+      champion: r.standings?.[0]?.team?.name || r.qualified?.[0]?.name || '—',
+      championName: r.standings?.[0]?.team?.name || r.qualified?.[0]?.name || '—',
+      championId: r.standings?.[0]?.team?.id || r.qualified?.[0]?.id || null,
+      runnerUp: r.standings?.[1]?.team?.name || '—',
+      runnerUpName: r.standings?.[1]?.team?.name || '—',
+      runnerUpId: r.standings?.[1]?.team?.id || null,
     })),
     teamSeasons,
     dnqTeams,
@@ -1788,7 +1850,7 @@ function finalizeSeasonStats() {
       goals: s.goals||0, games: s.wcsPlayed||0, medals: { ...s.medals },
       avgRating: s.ratings?.length ? (s.ratings.reduce((a,b)=>a+b,0)/s.ratings.length) : 0,
       // What round did this player's team reach this season?
-      roundReached: S.roundReached[s.teamId] || 'Group',
+      roundReached: S.roundReached[s.teamId] || (S.era === 'european_cup' ? 'Round of 16' : 'Group'),
     })),
   })
 
@@ -1800,16 +1862,147 @@ function finalizeSeasonStats() {
 
   autoSave()
 }
+
+// ── Real-world legend arrivals ────────────────────────────────
+// These named stars enter close to their historical breakthrough year.
+// They use the same rarity caps and three-star squad slots as generated
+// players, so they enrich rather than overwhelm the fictional universe.
+function ensureHistoricLegendSchedule() {
+  S.namedLegendSchedule = S.namedLegendSchedule || {}
+  for (const def of HISTORIC_LEGENDS) {
+    if (typeof S.namedLegendSchedule[def.key] === 'number') continue
+    // The opening 1956 cohort is present immediately. Later arrivals have
+    // a subtle ±1-year variation so universes do not unfold identically.
+    const jitter = def.year <= 1956 ? 0 : pick([-1,0,0,0,1])
+    S.namedLegendSchedule[def.key] = Math.max(1956, def.year + jitter)
+  }
+}
+
+function historicLegendTeam(def) {
+  const teams = S.allTeams || []
+  const preferred = (def.preferredTeams || []).map(id => teams.find(t => t.id === id)).filter(Boolean)
+  const home = teams.filter(t => t.league === def.league)
+  const room = list => list.filter(t => (t.stars || []).length < 3)
+
+  let candidates = room(preferred)
+  if (!candidates.length) candidates = room(home)
+  if (!candidates.length) {
+    // Create the requested home-country slot by retiring a Common player.
+    const replacementHosts = [...preferred, ...home].filter((t,i,a) => t && a.findIndex(x => x.id === t.id) === i)
+    const host = replacementHosts
+      .map(team => ({ team, common:(team.stars || []).find(s => s.tier === 'common') }))
+      .filter(x => x.common)
+      .sort((a,b) => (b.team.money || 0) - (a.team.money || 0))[0]
+    if (host) return { team:host.team, displaced:host.common }
+  }
+  if (!candidates.length) candidates = room(teams)
+  if (!candidates.length) return null
+
+  // Preferred historical clubs are strongly favoured, but the exact club
+  // can vary when several sensible destinations exist.
+  candidates.sort((a,b) => (b.money || 0) - (a.money || 0) || Math.random() - .5)
+  const top = candidates.slice(0, Math.min(3, candidates.length))
+  return { team:pick(top), displaced:null }
+}
+
+function createHistoricLegend(def, team, currentSeason) {
+  const trait = STAR_TRAITS.find(t => t.id === def.trait) || pickStarTrait(def.pos, def.tier)
+  const star = {
+    id:`legend_${def.key}`,
+    legacyKey:def.key,
+    name:def.name,
+    nationality:def.nationality,
+    pos:def.pos,
+    tier:def.tier,
+    teamId:team.id,
+    teamName:team.name,
+    cc:team.cc,
+    season:currentSeason,
+    debutYear:currentCalendarYear(),
+    debutAge:21,
+    lifespan:def.lifespan || 9,
+    goals:0,
+    ratings:[],
+    wcsPlayed:0,
+    fame:0,
+    medals:{ gold:0, silver:0, bronze:0 },
+    statBonus:{ ...(def.profile || STAT_BONUSES[def.pos]?.[def.tier] || {}) },
+    goalDist:GOAL_DIST[def.pos]?.[def.tier] || [1,0,0,0,0],
+    saveProb:SAVE_PROB[def.pos]?.[def.tier] || 0,
+    trait,
+    historicLegend:true,
+    realWorldLegend:true,
+    lastTransferSeason:currentSeason,
+    contract:null,
+  }
+  star.contract = rollContract(currentSeason, star, team, 82, rand(3,5))
+  star.careerMult = computeCareerMult(star, currentSeason)
+  return star
+}
+
+function injectHistoricLegends(moves, currentSeason) {
+  ensureHistoricLegendSchedule()
+  S.namedLegendsIntroduced = S.namedLegendsIntroduced || []
+  const introduced = new Set(S.namedLegendsIntroduced)
+  const year = currentCalendarYear()
+  const due = HISTORIC_LEGENDS
+    .filter(def => !introduced.has(def.key) && (S.namedLegendSchedule[def.key] || def.year) <= year)
+    .sort((a,b) => a.year - b.year)
+
+  for (const def of due) {
+    // Real historical stars have priority over generated players at the
+    // same rarity. They still obey the global caps: if the rarity is full,
+    // the least-established generated player is retired. If every occupied
+    // slot already belongs to a named legend, this debut waits.
+    const cap = def.tier === 'generational' ? GENERATIONAL_CAP_MAX : def.tier === 'legendary' ? LEGENDARY_CAP_MAX : null
+    if (cap != null && countTierInWorld(def.tier) >= cap) {
+      const generated = (S.allTeams || []).flatMap(team => (team.stars || []).map(star => ({ team, star })))
+        .filter(x => x.star.tier === def.tier && !x.star.historicLegend)
+        .sort((a,b) => ((b.star.season || 1) - (a.star.season || 1)) || ((a.star.fame || 0) - (b.star.fame || 0)))
+      const victim = generated[0]
+      if (!victim) continue
+      victim.team.stars = victim.team.stars.filter(s => s !== victim.star)
+      moves.push({
+        phase:'retirement', kind:'player', star:victim.star, name:victim.star.name,
+        tier:victim.star.tier, pos:victim.star.pos, from:victim.team.name,
+        fromId:victim.team.id, fromCC:victim.team.cc,
+        reason:'made way for a defining talent of the era',
+      })
+    }
+    const destination = historicLegendTeam(def)
+    if (!destination?.team) continue
+    const { team, displaced } = destination
+    if (displaced) {
+      team.stars = team.stars.filter(s => s !== displaced)
+      moves.push({
+        phase:'retirement', kind:'player', star:displaced, name:displaced.name,
+        tier:displaced.tier, pos:displaced.pos, from:team.name, fromId:team.id,
+        fromCC:team.cc, reason:'academy slot opened for a historic talent',
+      })
+    }
+    if ((team.stars || []).length >= 3) continue
+    const star = createHistoricLegend(def, team, currentSeason)
+    team.stars.push(star)
+    S.namedLegendsIntroduced.push(def.key)
+    introduced.add(def.key)
+    moves.push({
+      phase:'historic_debut', kind:'player', star, name:star.name, tier:star.tier,
+      pos:star.pos, from:'Historic breakthrough', to:team.name, toId:team.id,
+      toCC:team.cc, salary:star.contract?.salary, contractYears:star.contract?.yearsTotal,
+      debutYear:year,
+    })
+  }
+}
+
 // ── OFFSEASON FLOW (Pass 2) ───────────────────────────────────
 // Replaces the old market. Runs in fixed order:
 //   1. Retirements (stars + coaches whose lifespan is up)
 //   2. Contract resolution (renew or send to free agency)
-//   3. Income update (annual money + champion penalty)
-//   4. Rookie spawn (only for teams with 0 stars / coachless)
-//   5. Free agent signings (priority: more open slots first; GM
-//      "Good FA Negotiator" trait jumps the queue; one per team)
-//   6. Salary deduction (annual salaries pulled from cashOnHand)
-//   7. Transfers (deferred — Pass 2.5)
+//   3. Recurring revenue, base payroll, and operating costs
+//   4. Rookie/manager generation where a club has a vacancy
+//   5. Permanent transfers and free-agent signings
+//   6. Named-player and coach salaries
+//   7. Treasury-funded team development
 //
 // Returns { moves } — an ordered timeline used by the Market UI.
 export function runMarket() {
@@ -1818,607 +2011,401 @@ export function runMarket() {
   const currentSeason = S.season || 1
   const findTeam = id => S.allTeams.find(t => t.id === id)
   const tierRank = { generational: 6, legendary: 5, epic: 4, rare: 3, uncommon: 2, common: 1 }
+  const premiumTiers = new Set(['rare', 'epic'])
+  const marqueeTiers = new Set(['legendary', 'generational'])
+  const round1 = n => Math.round((Number(n) || 0) * 10) / 10
 
-  // Ensure structures.
   S.coaches = S.coaches || []
   S.freeAgents = S.freeAgents || { stars: [], coaches: [] }
-  S.allTeams.forEach(t => {
-    if (typeof t.cashOnHand !== 'number') t.cashOnHand = 0
-    if (!t.stars) t.stars = []
-  })
-
-  // ── 1. Retirements ────────────────────────────────────────
+  S.transferHistory = S.transferHistory || []
+  S.financeHistory = S.financeHistory || []
   S.allTeams.forEach(team => {
-    const survivors = []
-    for (const s of team.stars || []) {
-      const age = currentSeason - (s.season || 1)
-      if (age >= s.lifespan) {
-        moves.push({
-          phase: 'retirement', kind: 'player',
-          star: s, name: s.name, tier: s.tier, pos: s.pos,
-          from: team.name, fromId: team.id, fromCC: team.cc,
-        })
-      } else survivors.push(s)
-    }
-    team.stars = survivors
+    ensureClubFinance(team)
+    if (!team.stars) team.stars = []
   })
-  // Retire any free-agent stars whose lifespan expired.
-  S.freeAgents.stars = (S.freeAgents.stars || []).filter(s => {
-    const age = currentSeason - (s.season || 1)
-    if (age >= s.lifespan) {
-      moves.push({
-        phase: 'retirement', kind: 'player',
-        star: s, name: s.name, tier: s.tier, pos: s.pos,
-        from: 'Free agency',
-      })
-      return false
-    }
-    return true
-  })
+  ensureContracts()
 
-  // Coaches
-  const coachSurvivors = []
-  S.coaches.forEach(c => {
-    const age = currentSeason - (c.season || 1)
-    if (age >= c.lifespan) {
+  const detachPlayer = (star, team, reason = null) => {
+    team.stars = (team.stars || []).filter(s => s !== star)
+    star.teamId = null
+    star.teamName = null
+    star.cc = null
+    star.contract = null
+    if (!S.freeAgents.stars.includes(star)) S.freeAgents.stars.push(star)
+    if (reason) moves.push({
+      phase: 'expire', kind: 'player', star, name: star.name, tier: star.tier, pos: star.pos,
+      from: team.name, fromId: team.id, fromCC: team.cc, to: 'Free agency', reason,
+    })
+  }
+
+  const detachCoach = (coach, team, reason = null) => {
+    S.coaches = S.coaches.filter(c => c !== coach)
+    if (team?.coachId === coach.id) team.coachId = null
+    coach.teamId = null
+    coach.teamName = null
+    coach.contract = null
+    if (!S.freeAgents.coaches.includes(coach)) S.freeAgents.coaches.push(coach)
+    if (reason) moves.push({
+      phase: 'expire', kind: 'coach', coach, name: coach.name, tier: coach.tier,
+      from: team?.name || '—', fromId: team?.id, fromCC: team?.cc,
+      to: 'Free agency', reason,
+    })
+  }
+
+  // 1) Retirements.
+  for (const team of S.allTeams) {
+    for (const star of [...(team.stars || [])]) {
+      const careerYear = currentSeason - (star.season || 1)
+      if (careerYear < (star.lifespan || 10)) continue
+      team.stars = team.stars.filter(s => s !== star)
       moves.push({
-        phase: 'retirement', kind: 'coach',
-        coach: c, name: c.name, tier: c.tier,
-        from: c.teamName, fromId: c.teamId, fromCC: findTeam(c.teamId)?.cc,
+        phase: 'retirement', kind: 'player', star, name: star.name, tier: star.tier, pos: star.pos,
+        from: team.name, fromId: team.id, fromCC: team.cc,
       })
-      const t = findTeam(c.teamId)
-      if (t && t.coachId === c.id) t.coachId = null
-    } else coachSurvivors.push(c)
-  })
-  S.coaches = coachSurvivors
-  S.freeAgents.coaches = (S.freeAgents.coaches || []).filter(c => {
-    const age = currentSeason - (c.season || 1)
-    if (age >= c.lifespan) {
-      moves.push({
-        phase: 'retirement', kind: 'coach',
-        coach: c, name: c.name, tier: c.tier,
-        from: 'Free agency',
-      })
-      return false
     }
-    return true
+  }
+  S.freeAgents.stars = (S.freeAgents.stars || []).filter(star => {
+    const retired = currentSeason - (star.season || 1) >= (star.lifespan || 10)
+    if (retired) moves.push({ phase:'retirement', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Free agency' })
+    return !retired
   })
+  for (const coach of [...S.coaches]) {
+    if (currentSeason - (coach.season || 1) < (coach.lifespan || 8)) continue
+    const team = findTeam(coach.teamId)
+    S.coaches = S.coaches.filter(c => c !== coach)
+    if (team?.coachId === coach.id) team.coachId = null
+    moves.push({ phase:'retirement', kind:'coach', coach, name:coach.name, tier:coach.tier, from:team?.name || coach.teamName, fromId:team?.id, fromCC:team?.cc })
+  }
+  S.freeAgents.coaches = (S.freeAgents.coaches || []).filter(coach => currentSeason - (coach.season || 1) < (coach.lifespan || 8))
 
-  // ── 2. Contract resolution ────────────────────────────────
-  // Tick each contract. yearsLeft >= 1 after tick → keep on roster.
-  // yearsLeft == 0 → decide renew (happy + team can afford) or FA.
-  S.allTeams.forEach(team => {
-    const keep = []
-    for (const star of team.stars || []) {
-      if (!star.contract) star.contract = rollContract(currentSeason - 1)
-      star.contract.yearsLeft = (star.contract.yearsLeft || 0) - 1
-      if (star.contract.yearsLeft > 0) { keep.push(star); continue }
-
+  // 2) Contract decisions. Wages are negotiated dynamically; unhappy
+  // players ask for less, but may still choose a new challenge.
+  for (const team of S.allTeams) {
+    for (const star of [...(team.stars || [])]) {
+      if (!star.contract) star.contract = rollContract(currentSeason - 1, star, team, 70)
+      star.contract.yearsLeft = Math.max(0, (star.contract.yearsLeft || 0) - 1)
+      if (star.contract.yearsLeft > 0) continue
       const happiness = computeHappiness(star, team.id)
-      const threshold = HAPPINESS_THRESHOLDS[star.tier] || 0
-      const salary = RARITY_ECON[star.tier]?.salary || 0
-      const happy = happiness >= threshold
-      // Surplus excluding this expiring contract (already cleared above).
-      const surplus = annualIncome(team) - baseSpend(team) - teamAnnualSalary(team)
-      const canAfford = surplus >= salary
-
-      if (happy && canAfford) {
-        star.contract = rollContract(currentSeason)
-        keep.push(star)
+      const salary = playerSalaryDemand(star, team, happiness, currentSeason)
+      const happyEnough = happiness >= (HAPPINESS_THRESHOLDS[star.tier] || 0)
+      const affordable = projectedAnnualSurplus(team, salary, currentSeason) >= -annualIncome(team, currentSeason) * 0.035
+      if (happyEnough && affordable) {
+        star.contract = rollContract(currentSeason, star, team, happiness)
         moves.push({
-          phase: 'renew', kind: 'player',
-          star, name: star.name, tier: star.tier, pos: star.pos,
-          from: team.name, fromId: team.id, fromCC: team.cc,
-          to:   team.name, toId:   team.id, toCC:   team.cc,
-          contractYears: star.contract.yearsTotal,
-          happiness,
+          phase:'renew', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos,
+          from:team.name, fromId:team.id, fromCC:team.cc,
+          to:team.name, toId:team.id, toCC:team.cc,
+          contractYears:star.contract.yearsTotal, salary:star.contract.salary, happiness,
         })
       } else {
-        const reason = !happy ? 'unhappy with results' : 'team couldn\'t afford'
-        star.teamId = null
-        star.teamName = null
-        star.contract = null
-        S.freeAgents.stars.push(star)
-        moves.push({
-          phase: 'expire', kind: 'player',
-          star, name: star.name, tier: star.tier, pos: star.pos,
-          from: team.name, fromId: team.id, fromCC: team.cc,
-          to: 'Free agency',
-          reason, happiness,
-        })
+        detachPlayer(star, team, !happyEnough ? 'wanted a new challenge' : 'club could not match wage demands')
       }
     }
-    team.stars = keep
-  })
-
-  // Coaches — same logic
-  const keptCoaches = []
-  for (const coach of S.coaches) {
-    if (!coach.contract) coach.contract = rollContract(currentSeason - 1)
-    coach.contract.yearsLeft = (coach.contract.yearsLeft || 0) - 1
-    if (coach.contract.yearsLeft > 0) { keptCoaches.push(coach); continue }
+  }
+  for (const coach of [...S.coaches]) {
+    if (!coach.contract) coach.contract = rollContract(currentSeason - 1, coach, findTeam(coach.teamId), 70)
+    coach.contract.yearsLeft = Math.max(0, (coach.contract.yearsLeft || 0) - 1)
+    if (coach.contract.yearsLeft > 0) continue
     const team = findTeam(coach.teamId)
-    if (!team) {
-      // No team to renew with — drop to FA.
-      coach.teamId = null
-      coach.teamName = null
-      coach.contract = null
-      S.freeAgents.coaches.push(coach)
-      continue
-    }
+    if (!team) { detachCoach(coach, null); continue }
     const happiness = computeHappiness(coach, team.id)
-    const threshold = HAPPINESS_THRESHOLDS[coach.tier] || 0
-    const salary = RARITY_ECON[coach.tier]?.salary || 0
-    const happy = happiness >= threshold
-    const surplus = annualIncome(team) - baseSpend(team) - teamAnnualSalary(team)
-    const canAfford = surplus >= salary
-
-    if (happy && canAfford) {
-      coach.contract = rollContract(currentSeason)
-      keptCoaches.push(coach)
+    const salary = coachSalaryDemand(coach, team, happiness, currentSeason)
+    const affordable = projectedAnnualSurplus(team, salary, currentSeason) >= -annualIncome(team, currentSeason) * 0.025
+    if (happiness >= (HAPPINESS_THRESHOLDS[coach.tier] || 0) && affordable) {
+      coach.contract = rollContract(currentSeason, coach, team, happiness)
       moves.push({
-        phase: 'renew', kind: 'coach',
-        coach, name: coach.name, tier: coach.tier,
-        from: team.name, fromId: team.id, fromCC: team.cc,
-        to:   team.name, toId:   team.id, toCC:   team.cc,
-        contractYears: coach.contract.yearsTotal,
-        happiness,
+        phase:'renew', kind:'coach', coach, name:coach.name, tier:coach.tier,
+        from:team.name, fromId:team.id, fromCC:team.cc,
+        to:team.name, toId:team.id, toCC:team.cc,
+        contractYears:coach.contract.yearsTotal, salary:coach.contract.salary, happiness,
       })
     } else {
-      const reason = !happy ? 'unhappy with results' : 'team couldn\'t afford'
-      const oldName = coach.teamName, oldId = coach.teamId, oldCC = team.cc
-      if (team.coachId === coach.id) team.coachId = null
-      coach.teamId = null
-      coach.teamName = null
-      coach.contract = null
-      S.freeAgents.coaches.push(coach)
-      moves.push({
-        phase: 'expire', kind: 'coach',
-        coach, name: coach.name, tier: coach.tier,
-        from: oldName, fromId: oldId, fromCC: oldCC,
-        to: 'Free agency',
-        reason, happiness,
-      })
+      detachCoach(coach, team, happiness < (HAPPINESS_THRESHOLDS[coach.tier] || 0) ? 'wanted a new challenge' : 'club could not match wage demands')
     }
   }
-  S.coaches = keptCoaches
 
-  // ── 3. Income, base spend, champion penalty ───────────────
-  // Income climbs faster for top clubs (see annualIncome curve).
-  // Base spend ($3M) is deducted from every team — sustains the 11
-  // non-star players running the team's base 65 rating.
-  const championId = S.champion?.id || null
-  S.allTeams.forEach(team => {
-    const income = annualIncome(team)
-    team.cashOnHand = (team.cashOnHand || 0) + income
-    moves.push({
-      phase: 'income', kind: 'team',
-      teamId: team.id, teamName: team.name, teamCC: team.cc,
-      amount: income, cashAfter: team.cashOnHand,
-    })
-    // Base operating cost (scales with income tier).
-    const bs = baseSpend(team)
-    team.cashOnHand = Math.max(0, team.cashOnHand - bs)
-    moves.push({
-      phase: 'base_spend', kind: 'team',
-      teamId: team.id, teamName: team.name, teamCC: team.cc,
-      amount: -bs, cashAfter: team.cashOnHand,
-    })
-    if (championId === team.id) {
-      const penalty = Math.min(CHAMPION_PENALTY, team.cashOnHand)
-      team.cashOnHand = Math.max(0, team.cashOnHand - penalty)
-      moves.push({
-        phase: 'champion_penalty', kind: 'team',
-        teamId: team.id, teamName: team.name, teamCC: team.cc,
-        amount: -penalty, cashAfter: team.cashOnHand,
-      })
-    }
-  })
+  // 3) Recurring finances: revenue arrives, then the base squad and
+  // club operations are paid. Named-star and coach salaries are paid
+  // after the market closes so the final roster drives the wage bill.
+  for (const team of S.allTeams) {
+    const income = annualIncome(team, currentSeason)
+    const squad = baseSquadSalary(team, currentSeason)
+    const ops = operatingCosts(team, currentSeason)
+    addTreasury(team, income)
+    moves.push({ phase:'income', kind:'team', teamId:team.id, teamName:team.name, teamCC:team.cc, amount:income, cashAfter:team.treasury })
+    addTreasury(team, -squad)
+    moves.push({ phase:'base_spend', kind:'team', teamId:team.id, teamName:team.name, teamCC:team.cc, amount:-squad, cashAfter:team.treasury, label:'Base squad salaries' })
+    addTreasury(team, -ops)
+    moves.push({ phase:'operations', kind:'team', teamId:team.id, teamName:team.name, teamCC:team.cc, amount:-ops, cashAfter:team.treasury })
+  }
 
-  // ── 4. Rookie spawn (empty rosters only) ──────────────────
-  const isOpeningMarket = (S.season || 1) === 1
-  S.allTeams.forEach(team => {
-    if (team.stars.length === 0) {
-      const ns = genStar(team)
-      // First market of the world: stagger ages and contracts so the
-      // initial roster isn't all year-1 rookies. Pretend each star
-      // signed somewhere in the past — `season` shifts back by 0..(lifespan-1)
-      // years; contract yearsLeft also gets shuffled across 1..total.
+  // 4) Historic debuts are processed before generic youth generation.
+  // This reserves the correct premium-rarity slots for the real-world
+  // legends due in the current calendar year instead of letting a random
+  // rookie occupy them first.
+  injectHistoricLegends(moves, currentSeason)
+
+  // Guarantee every club has a coach and at least one initial star.
+  const isOpeningMarket = currentSeason === 1
+  for (const team of S.allTeams) {
+    if (!(team.stars || []).length) {
+      const star = genStar(team)
       if (isOpeningMarket) {
-        const startedAgo = rand(0, Math.max(0, (ns.lifespan || 10) - 2))
-        ns.season = 1 - startedAgo
-        if (ns.contract) {
-          const total = ns.contract.yearsTotal || rand(3, 6)
-          ns.contract.yearsTotal = total
-          ns.contract.yearsLeft = rand(1, total)
-          ns.contract.signedSeason = 1 - rand(0, total - 1)
-        }
+        const startedAgo = rand(0, Math.max(0, (star.lifespan || 10) - 2))
+        star.season = 1 - startedAgo
+        star.debutAge = 18
+        const total = star.contract?.yearsTotal || rand(3, 6)
+        star.contract = rollContract(1 - rand(0, total - 1), star, team, 70, total)
+        star.contract.yearsLeft = rand(1, total)
       }
-      team.stars.push(ns)
-      moves.push({
-        phase: 'youth', kind: 'player',
-        star: ns, name: ns.name, tier: ns.tier, pos: ns.pos,
-        from: 'Youth Academy', to: team.name, toId: team.id, toCC: team.cc,
-      })
-    }
-  })
-  // Every team needs a coach to play matches. If a coach contract
-  // expired and that team didn't sign a FA, spawn a new coach.
-  S.allTeams.forEach(team => {
-    if (team.coachId && S.coaches.find(c => c.id === team.coachId)) return
-    const nc = genCoach(team)
-    // Opening-market stagger so coaches aren't all year-1 either.
-    if (isOpeningMarket) {
-      const startedAgo = rand(0, Math.max(0, (nc.lifespan || 8) - 2))
-      nc.season = 1 - startedAgo
-      if (nc.contract) {
-        const total = nc.contract.yearsTotal || rand(3, 6)
-        nc.contract.yearsTotal = total
-        nc.contract.yearsLeft = rand(1, total)
-        nc.contract.signedSeason = 1 - rand(0, total - 1)
-      }
-    }
-    team.coachId = nc.id
-    S.coaches.push(nc)
-    moves.push({
-      phase: 'youth', kind: 'coach',
-      coach: nc, name: nc.name, tier: nc.tier, trait: nc.trait,
-      from: 'New manager', to: team.name, toId: team.id, toCC: team.cc,
-    })
-  })
-
-  // Generational floor: world must hold at least 1 Gen at all times.
-  // If we just dropped to zero (retirement, etc.), debut a fresh Gen
-  // rookie at the wealthiest team that still has an open roster slot.
-  if (countGenerationalsInWorld() < GENERATIONAL_CAP_MIN) {
-    const cands = S.allTeams
-      .filter(t => (t.stars?.length || 0) < 3)
-      .sort((a, b) => (b.money || 0) - (a.money || 0))
-    if (cands.length) {
-      const team = cands[0]
-      const gen = genStar(team, 'generational')
-      team.stars.push(gen)
-      moves.push({
-        phase: 'youth', kind: 'player',
-        star: gen, name: gen.name, tier: gen.tier, pos: gen.pos,
-        from: 'Generational debut', to: team.name, toId: team.id, toCC: team.cc,
-      })
-    }
-  }
-
-  // ── 5. Free agent signings ────────────────────────────────
-  // Priority bucket: 3-open → 2-open → 1-open. Within bucket,
-  // teams with a "Good FA Negotiator" GM jump the queue; rest
-  // randomized. Each team signs AT MOST ONE FA per offseason.
-  // Affordability checks: annual salary ≤ surplus AND signing
-  // fee ≤ cashOnHand AND player happy with this team.
-  const openSlots = team => 3 - (team.stars?.length || 0)
-  const considerHappiness = (entity, team) => {
-    const temp = { ...entity, contract: { signedSeason: currentSeason } }
-    return computeHappiness(temp, team.id)
-  }
-
-  for (let bucket = 3; bucket >= 1; bucket--) {
-    const teamsInBucket = S.allTeams.filter(t => openSlots(t) === bucket)
-        const sorted = teamsInBucket.slice().sort((a, b) => {
-      const aFA = a.gm?.trait?.id?.startsWith('good_fa_negotiator') ? 1 : 0
-      const bFA = b.gm?.trait?.id?.startsWith('good_fa_negotiator') ? 1 : 0
-      if (aFA !== bFA) return bFA - aFA
-      return Math.random() - 0.5
-    })
-
-    for (const team of sorted) {
-      if (openSlots(team) <= 0) continue
-      const surplus = annualIncome(team) - baseSpend(team) - teamAnnualSalary(team)
-      const cash = team.cashOnHand || 0
-      const currentSalaries = teamAnnualSalary(team)
-      const candidates = S.freeAgents.stars.filter(s => {
-        const econ = RARITY_ECON[s.tier] || {}
-        if ((econ.salary  || 0) > surplus) return false
-        // Cash must cover signing fee + this year's TOTAL salary
-        // (existing roster + new player). Otherwise the team will be
-        // forced to release stars in step 7.
-        const totalCashNeeded = (econ.signFee || 0) + currentSalaries + (econ.salary || 0)
-        if (totalCashNeeded > cash) return false
-        const h = considerHappiness(s, team)
-        const threshold = HAPPINESS_THRESHOLDS[s.tier] || 0
-        return h >= threshold
-      })
-      if (!candidates.length) continue
-      // Prefer the highest tier we can afford. Within same tier,
-      // random pick (no scouting hint).
-      candidates.sort((a, b) => (tierRank[b.tier] || 0) - (tierRank[a.tier] || 0))
-      const topTier = candidates[0].tier
-      const topCandidates = candidates.filter(c => c.tier === topTier)
-      const star = topCandidates[Math.floor(Math.random() * topCandidates.length)]
-      const econ = RARITY_ECON[star.tier] || {}
-      team.cashOnHand = Math.max(0, cash - (econ.signFee || 0))
-      star.teamId = team.id
-      star.teamName = team.name
-      star.cc = team.cc
-      star.contract = rollContract(currentSeason)
       team.stars.push(star)
-      S.freeAgents.stars = S.freeAgents.stars.filter(s => s !== star)
-      moves.push({
-        phase: 'fa_sign', kind: 'player',
-        star, name: star.name, tier: star.tier, pos: star.pos,
-        from: 'Free agency',
-        to: team.name, toId: team.id, toCC: team.cc,
-        signFee: econ.signFee || 0, salary: econ.salary || 0,
-        contractYears: star.contract.yearsTotal,
-      })
+      moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary })
+    }
+    if (!team.coachId || !S.coaches.find(c => c.id === team.coachId)) {
+      const coach = genCoach(team)
+      if (isOpeningMarket) {
+        const startedAgo = rand(0, Math.max(0, (coach.lifespan || 8) - 2))
+        coach.season = 1 - startedAgo
+        const total = coach.contract?.yearsTotal || rand(3, 6)
+        coach.contract = rollContract(1 - rand(0, total - 1), coach, team, 70, total)
+        coach.contract.yearsLeft = rand(1, total)
+      }
+      team.coachId = coach.id
+      S.coaches.push(coach)
+      moves.push({ phase:'youth', kind:'coach', coach, name:coach.name, tier:coach.tier, trait:coach.trait, from:'New manager', to:team.name, toId:team.id, toCC:team.cc, salary:coach.contract?.salary })
     }
   }
 
-  // ── 6. Transfers ─────────────────────────────────────────
-  // Rich clubs poach UNHAPPY non-common stars from other teams.
-  // Buyer pays full signing fee; seller receives half (saleValue).
-  // Player joins with fresh contract; happiness resets to 100.
-  //
-  // Cap-replacement: a team at the 3-star cap can sign a
-  // tier-upgrade by releasing their worst star to free agency.
-  //
-  // Max one incoming acquisition per team per offseason (FA OR
-  // transfer — combined). buyersUsed tracks teams that already
-  // signed an FA in step 5.
-  const buyersUsed = new Set(
-    moves.filter(m => m.phase === 'fa_sign' && m.kind === 'player').map(m => m.toId)
-  )
-
-  // Collect for-sale players: under contract, non-common, unhappy.
-  // Each unhappy player has ~60% chance to actively shop this offseason
-  // (the rest are "stuck" for another year — failed negotiations,
-  // wage demands, family reasons, etc.). Tunes movement rate to roughly
-  // half of unhappy stars per offseason.
-  const forSale = []
-  // Per-tier chance an unhappy player actively shops in any given
-  // offseason. Premium players are harder to convince to actually
-  // leave (loyalty, comfort, established networks). Lower-tier
-  // players move more readily.
-  const shopChance = {
-    generational: 0.20,
-    legendary:    0.30,
-    epic:         0.40,
-    rare:         0.50,
-    uncommon:     0.60,
-  }
-  S.allTeams.forEach(seller => {
-    for (const star of seller.stars || []) {
-      if (star.tier === 'common') continue
-      if (!star.contract || star.contract.yearsLeft <= 0) continue
-      const happiness = computeHappiness(star, seller.id)
-      const threshold = HAPPINESS_THRESHOLDS[star.tier] || 0
-      if (happiness >= threshold) continue
-      const chance = shopChance[star.tier] ?? 0.5
-      if (Math.random() > chance) continue
-      forSale.push({ star, seller, happiness })
+  // Keep at least one Generational player in the active world.
+  if (countGenerationalsInWorld() < GENERATIONAL_CAP_MIN) {
+    const team = [...S.allTeams].filter(t => (t.stars?.length || 0) < 3).sort((a,b) => annualIncome(b)-annualIncome(a))[0]
+    if (team) {
+      const star = genStar(team, 'generational')
+      team.stars.push(star)
+      moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Generational debut', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary })
     }
-  })
-  // Premium players move first (a Legend's storyline shouldn't be
-  // gated by a Rare's earlier match).
-  forSale.sort((a, b) => (tierRank[b.star.tier] || 0) - (tierRank[a.star.tier] || 0))
+  }
 
-  for (const item of forSale) {
-    const { star, seller } = item
-    const econ = RARITY_ECON[star.tier] || {}
-    const starRank = tierRank[star.tier] || 0
+  const buyersUsed = new Set()
+  const canMove = star => star.lastTransferSeason == null || currentSeason - star.lastTransferSeason >= 2
+  const worstStar = team => [...(team.stars || [])].sort((a,b) => (tierRank[a.tier] || 0) - (tierRank[b.tier] || 0))[0] || null
 
-    // Find candidate buyers.
+  const executeTransfer = (star, seller, force = false) => {
+    if (!star || !seller || !canMove(star)) return false
+    const happiness = computeHappiness(star, seller.id)
+    const baseFee = playerMarketValue(star, seller, happiness, currentSeason)
     const candidates = []
     for (const buyer of S.allTeams) {
-      if (buyer.id === seller.id) continue
-      if (buyersUsed.has(buyer.id)) continue
-      const surplus = annualIncome(buyer) - baseSpend(buyer) - teamAnnualSalary(buyer)
-      const cash = buyer.cashOnHand || 0
-      const currentSalaries = teamAnnualSalary(buyer)
-      if ((econ.salary  || 0) > surplus) continue
-      const totalCashNeeded = (econ.signFee || 0) + currentSalaries + (econ.salary || 0)
-      if (totalCashNeeded > cash) continue
-
-      const stars = buyer.stars || []
-      let upgradeBenefit = 0
+      if (buyer.id === seller.id || buyersUsed.has(buyer.id)) continue
       let displaced = null
-      if (stars.length < 3) {
-        // Open slot — any non-common is fine.
-        upgradeBenefit = starRank
-      } else {
-        // Cap-replacement: must out-rank the worst current star.
-        const worst = stars.reduce(
-          (w, s) => (tierRank[s.tier] || 0) < (tierRank[w.tier] || Infinity) ? s : w,
-          stars[0]
-        )
-        const worstRank = tierRank[worst.tier] || 0
-        if (starRank <= worstRank) continue
-        upgradeBenefit = starRank - worstRank
-        displaced = worst
+      if ((buyer.stars?.length || 0) >= 3) {
+        displaced = worstStar(buyer)
+        if ((tierRank[star.tier] || 0) <= (tierRank[displaced?.tier] || 0)) continue
       }
-
-      candidates.push({ buyer, displaced, upgradeBenefit })
+      const joiningMood = Math.min(72, Math.max(20, happiness + 24))
+      const salary = playerSalaryDemand(star, buyer, joiningMood, currentSeason)
+      const feeFlex = force ? 0.94 : 0.98
+      const fee = round1(baseFee * (feeFlex + Math.random() * (force ? 0.08 : 0.05)))
+      if ((buyer.treasury || 0) < fee + 4) continue
+      if (projectedAnnualSurplus(buyer, salary, currentSeason) < -annualIncome(buyer, currentSeason) * 0.045) continue
+      const need = (buyer.stars?.length || 0) < 3 ? 2 : Math.max(0, (tierRank[star.tier] || 0) - (tierRank[displaced?.tier] || 0))
+      const cashPower = (buyer.treasury || 0) / Math.max(1, annualIncome(buyer, currentSeason))
+      const ambition = buyer.financeProfile?.ambition || 1
+      const prestige = (buyer.money || 6) * 0.8
+      candidates.push({ buyer, displaced, salary, fee, score:need*18 + cashPower*20 + ambition*10 + prestige + Math.random()*12 })
     }
-    if (!candidates.length) continue
+    if (!candidates.length) return false
+    candidates.sort((a,b) => b.score - a.score)
+    const { buyer, displaced, salary, fee } = candidates[0]
 
-    // Buyer priority. Top tier ($12-$14M effective) bids first
-    // because that's how real football works for marquee transfers.
-    // But to prevent mid-rich clubs from being permanently boxed
-    // out, we bucket money into [12+, 10-11, ≤9] tiers — within
-    // a bucket, the team with more cash on hand wins (they can
-    // afford the fee right now), tiebreak by upgrade benefit.
-    const moneyBucket = m => m >= 12 ? 0 : m >= 10 ? 1 : 2
-    candidates.sort((a, b) => {
-      const ba = moneyBucket(a.buyer.money || 0)
-      const bb = moneyBucket(b.buyer.money || 0)
-      if (ba !== bb) return ba - bb                                    // lower bucket = priority
-      const ca = (b.buyer.cashOnHand || 0) - (a.buyer.cashOnHand || 0)
-      if (ca !== 0) return ca                                          // cash-richer wins
-      return b.upgradeBenefit - a.upgradeBenefit
-    })
-    const { buyer, displaced } = candidates[0]
-
-    // Cap-release first, so the slot is actually open before the
-    // new star pushes in.
     if (displaced) {
       buyer.stars = buyer.stars.filter(s => s !== displaced)
       displaced.teamId = null
       displaced.teamName = null
+      displaced.cc = null
       displaced.contract = null
+      displaced.lastTransferSeason = currentSeason
       S.freeAgents.stars.push(displaced)
-      moves.push({
-        phase: 'cap_release', kind: 'player',
-        star: displaced, name: displaced.name, tier: displaced.tier, pos: displaced.pos,
-        from: buyer.name, fromId: buyer.id, fromCC: buyer.cc,
-        to: 'Free agency',
-        reason: 'displaced by transfer',
-      })
+      moves.push({ phase:'cap_release', kind:'player', star:displaced, name:displaced.name, tier:displaced.tier, pos:displaced.pos, from:buyer.name, fromId:buyer.id, fromCC:buyer.cc, to:'Free agency', reason:'displaced by a major signing' })
     }
 
-    // Move the player and money.
-    buyer.cashOnHand  = Math.max(0, (buyer.cashOnHand || 0) - (econ.signFee || 0))
-    seller.cashOnHand = (seller.cashOnHand || 0) + (econ.saleValue || 0)
+    addTreasury(buyer, -fee)
+    addTreasury(seller, fee)
     seller.stars = seller.stars.filter(s => s !== star)
-    star.teamId   = buyer.id
+    star.previousTeamId = seller.id
+    star.teamId = buyer.id
     star.teamName = buyer.name
-    star.cc       = buyer.cc
-    star.contract = rollContract(currentSeason)
+    star.cc = buyer.cc
+    star.lastTransferSeason = currentSeason
+    const years = rand(3, 5)
+    star.contract = { yearsLeft:years, yearsTotal:years, signedSeason:currentSeason, salary }
     buyer.stars.push(star)
     buyersUsed.add(buyer.id)
 
-    moves.push({
-      phase: 'transfer', kind: 'player',
-      star, name: star.name, tier: star.tier, pos: star.pos,
-      from: seller.name, fromId: seller.id, fromCC: seller.cc,
-      to:   buyer.name,  toId:   buyer.id,  toCC:   buyer.cc,
-      signFee: econ.signFee || 0, saleValue: econ.saleValue || 0, salary: econ.salary || 0,
-      contractYears: star.contract.yearsTotal,
-      happiness: item.happiness,
-      displaced: displaced ? { name: displaced.name, tier: displaced.tier } : null,
-    })
+    const record = {
+      id:`tr_${currentSeason}_${star.id}_${buyer.id}`,
+      season:currentSeason,
+      year:currentCalendarYear(),
+      playerId:star.id, playerName:star.name, pos:star.pos, tier:star.tier,
+      age:playerAge(star, currentSeason), fee, salary,
+      fromId:seller.id, from:seller.name, fromCC:seller.cc,
+      toId:buyer.id, to:buyer.name, toCC:buyer.cc,
+      contractYears:years, happiness,
+    }
+    S.transferHistory.push(record)
+    moves.push({ phase:'transfer', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:seller.name, fromId:seller.id, fromCC:seller.cc, to:buyer.name, toId:buyer.id, toCC:buyer.cc, signFee:fee, saleValue:fee, salary, contractYears:years, happiness, displaced:displaced ? { name:displaced.name, tier:displaced.tier } : null })
+    return true
   }
 
-  // ── 7. Salary deduction ──────────────────────────────────
-  // Every team pays the sum of their current roster's salaries.
-  // Cash is HARD-FLOORED at 0 — if salary commitments exceed cash
-  // on hand (rare; happens when a GM's moneyBonus expires and the
-  // team is left with contracts it can't sustain), the team forces
-  // out its highest-paid star to free agency until salaries fit.
-  S.allTeams.forEach(team => {
-    let sal = teamAnnualSalary(team)
-    const cash = team.cashOnHand || 0
+  // 5) Transfer market. Every season targets several Rare/Epic moves;
+  // every second season targets one Legendary/Generational blockbuster.
+  const marketCandidates = () => S.allTeams.flatMap(seller => (seller.stars || []).map(star => ({
+    seller, star,
+    happiness:computeHappiness(star, seller.id),
+    intent:(100 - computeHappiness(star, seller.id)) * 0.55 + (star.contract?.yearsLeft <= 2 ? 18 : 0) + Math.random()*32,
+  }))).filter(x => x.star.tier !== 'common' && x.star.contract?.yearsLeft > 0 && canMove(x.star))
 
-    // If salary exceeds cash, release highest-paid star(s).
-    while (sal > cash) {
-      const stars = team.stars || []
-      if (stars.length === 0) break  // nothing left to release
-      // Pick the highest-salary star to drop. Tiebreaker: lowest tier
-      // (rather drop an Epic than a Legend if same salary).
-      const tierVal = { generational:6, legendary:5, epic:4, rare:3, uncommon:2, common:1 }
-      const ranked = [...stars].sort((a, b) => {
-        const sa = RARITY_ECON[a.tier]?.salary || 0
-        const sb = RARITY_ECON[b.tier]?.salary || 0
-        if (sb !== sa) return sb - sa
-        return (tierVal[a.tier]||0) - (tierVal[b.tier]||0)
-      })
-      const dropped = ranked[0]
-      team.stars = stars.filter(s => s !== dropped)
-      dropped.teamId = null
-      dropped.teamName = null
-      dropped.contract = null
-      S.freeAgents.stars.push(dropped)
-      moves.push({
-        phase: 'cap_release', kind: 'player',
-        star: dropped, name: dropped.name, tier: dropped.tier, pos: dropped.pos,
-        from: team.name, fromId: team.id, fromCC: team.cc,
-        to: 'Free agency',
-        reason: 'salary cap exceeded',
-      })
-      sal = teamAnnualSalary(team)
-    }
-
-    if (sal > 0) {
-      team.cashOnHand = Math.max(0, cash - sal)
-      moves.push({
-        phase: 'salary', kind: 'team',
-        teamId: team.id, teamName: team.name, teamCC: team.cc,
-        amount: -sal, cashAfter: team.cashOnHand,
-      })
-    }
+  const marqueeTarget = currentSeason % 2 === 0 ? 1 : (Math.random() < 0.08 ? 1 : 0)
+  let marqueeDone = 0
+  const desiredMarqueeTier = Math.random() < 0.55 ? 'legendary' : 'generational'
+  const marqueeCandidates = marketCandidates().filter(x => marqueeTiers.has(x.star.tier)).sort((a,b) => {
+    const ap = a.star.tier === desiredMarqueeTier ? 1 : 0
+    const bp = b.star.tier === desiredMarqueeTier ? 1 : 0
+    return (bp-ap) || b.intent-a.intent
   })
+  for (const item of marqueeCandidates) {
+    if (marqueeDone >= marqueeTarget) break
+    if (executeTransfer(item.star, item.seller, true)) marqueeDone++
+  }
 
-  // ── 8. Stat decay ────────────────────────────────────────
-  // Each non-mental stat regresses toward 60: lose round(coef × (stat - 60))
-  // points ± wiggle. Higher coef means harder to maintain high stats.
-  S.allTeams.forEach(team => {
-    if (!team.seasonStats) return
+  const premiumTarget = rand(3, 4)
+  let premiumDone = 0
+  const premiumCandidates = marketCandidates().filter(x => premiumTiers.has(x.star.tier)).sort((a,b) => b.intent-a.intent)
+  for (const item of premiumCandidates) {
+    if (premiumDone >= premiumTarget) break
+    if (executeTransfer(item.star, item.seller, premiumDone < 3)) premiumDone++
+  }
+
+  // Additional organic moves, mostly unhappy players and short contracts.
+  const organic = marketCandidates().filter(x => !marqueeTiers.has(x.star.tier) && !buyersUsed.has(x.seller.id)).sort((a,b) => b.intent-a.intent)
+  for (const item of organic) {
+    if (item.intent < 62 || Math.random() > 0.22) continue
+    executeTransfer(item.star, item.seller, false)
+  }
+
+  // 6) Free agents. Clubs may still sign one if they did not already
+  // buy a player; the signing bonus is much smaller than a transfer fee.
+  const freeAgents = [...(S.freeAgents.stars || [])].sort((a,b) => (tierRank[b.tier] || 0) - (tierRank[a.tier] || 0))
+  for (const star of freeAgents) {
+    if (!canMove(star)) continue
+    const candidates = []
+    for (const team of S.allTeams) {
+      if (buyersUsed.has(team.id) || (team.stars?.length || 0) >= 3) continue
+      const happiness = 48
+      const salary = playerSalaryDemand(star, team, happiness, currentSeason)
+      const bonus = freeAgentSigningBonus(star, team, happiness, currentSeason)
+      if ((team.treasury || 0) < bonus + 3) continue
+      if (projectedAnnualSurplus(team, salary, currentSeason) < -annualIncome(team, currentSeason) * 0.035) continue
+      candidates.push({ team, salary, bonus, score:(tierRank[star.tier]||0)*12 + (team.money||6) + (team.treasury||0)/25 + Math.random()*8 })
+    }
+    if (!candidates.length) continue
+    candidates.sort((a,b) => b.score-a.score)
+    const { team, salary, bonus } = candidates[0]
+    addTreasury(team, -bonus)
+    star.teamId = team.id
+    star.teamName = team.name
+    star.cc = team.cc
+    const years = rand(2, 5)
+    star.contract = { yearsLeft:years, yearsTotal:years, signedSeason:currentSeason, salary }
+    star.lastTransferSeason = currentSeason
+    team.stars.push(star)
+    S.freeAgents.stars = S.freeAgents.stars.filter(s => s !== star)
+    buyersUsed.add(team.id)
+    moves.push({ phase:'fa_sign', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Free agency', to:team.name, toId:team.id, toCC:team.cc, signFee:bonus, salary, contractYears:years })
+  }
+
+  // Refill clubs stripped of their only star with a youth prospect.
+  for (const team of S.allTeams) {
+    if ((team.stars || []).length) continue
+    const star = genStar(team)
+    team.stars.push(star)
+    moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary })
+  }
+
+  // 7) Pay named-player and coach salaries from treasury.
+  for (const team of S.allTeams) {
+    const salary = teamAnnualSalary(team)
+    const paid = Math.min(team.treasury || 0, salary)
+    addTreasury(team, -paid)
+    moves.push({ phase:'salary', kind:'team', teamId:team.id, teamName:team.name, teamCC:team.cc, amount:-paid, scheduled:salary, shortfall:round1(Math.max(0, salary-paid)), cashAfter:team.treasury })
+  }
+
+  // 8) Team development. Strength decays gradually, then clubs invest
+  // a portion of treasury above their strategic transfer reserve.
+  for (const team of S.allTeams) {
+    if (!team.seasonStats) continue
     const s = team.seasonStats
-    const decayFor = (v) => {
-      const above = Math.max(0, v - 60)
-      const base = Math.round(above * ECON.decayCoef)
-      const wig = ECON.decayWiggle
-      return Math.max(0, base + (wig > 0 ? rand(-wig, wig) : 0))
+    const decayFor = value => Math.max(0, Math.round(Math.max(0, value - 60) * ECON.decayCoef) + rand(-ECON.decayWiggle, ECON.decayWiggle))
+    team.seasonStats = {
+      attack:Math.max(50, s.attack-decayFor(s.attack)),
+      defense:Math.max(50, s.defense-decayFor(s.defense)),
+      stamina:Math.max(50, s.stamina-decayFor(s.stamina)),
+      mental:60,
+      setPieces:Math.max(50, s.setPieces-decayFor(s.setPieces)),
     }
-    const decayed = {
-      attack:    Math.max(50, s.attack    - decayFor(s.attack)),
-      defense:   Math.max(50, s.defense   - decayFor(s.defense)),
-      stamina:   Math.max(50, s.stamina   - decayFor(s.stamina)),
-      mental:    60,
-      setPieces: Math.max(50, s.setPieces - decayFor(s.setPieces)),
+  }
+
+  for (const team of S.allTeams) {
+    if (!team.seasonStats) continue
+    const income = annualIncome(team, currentSeason)
+    const premiumCount = (team.stars || []).filter(s => ['rare','epic','legendary','generational'].includes(s.tier)).length
+    const reserve = Math.max(18, income * (premiumCount < 2 ? 0.28 : 0.14))
+    const excess = Math.max(0, (team.treasury || 0) - reserve)
+    if (excess < 10) continue
+    let spend = excess * (ECON.investMin + Math.random() * (ECON.investMax - ECON.investMin))
+    if ((team.treasury || 0) > income * 0.48) spend += (team.treasury - income * 0.48) * 0.72
+    spend = round1(Math.min(125, Math.max(10, spend), team.treasury || 0))
+    if (spend <= 0) continue
+    addTreasury(team, -spend)
+    const statKeys = ['attack','defense','stamina','setPieces']
+    const points = Math.max(1, Math.round(spend / ECON.investmentPointCost))
+    for (let i=0; i<points; i++) {
+      const ordered = [...statKeys].sort((a,b) => team.seasonStats[a]-team.seasonStats[b] || Math.random()-0.5)
+      const key = ordered[Math.random() < 0.7 ? 0 : rand(0, ordered.length-1)]
+      team.seasonStats[key] = Math.min(92, team.seasonStats[key] + 1)
     }
-    team.seasonStats = decayed
+    moves.push({ phase:'invest', kind:'team', teamId:team.id, teamName:team.name, teamCC:team.cc, amount:-spend, cashAfter:team.treasury, points, newOverall:Math.round((team.seasonStats.attack+team.seasonStats.defense+team.seasonStats.stamina+team.seasonStats.mental+team.seasonStats.setPieces)/5) })
+  }
+
+  for (const team of S.allTeams) {
+    if (team.seasonStats) {
+      const s = team.seasonStats
+      team.currentOverall = Math.round((s.attack+s.defense+s.stamina+s.mental+s.setPieces)/5)
+    }
+    team.cashOnHand = round1(team.treasury || 0)
+  }
+
+  const seasonTransfers = moves.filter(m => m.phase === 'transfer')
+  const seasonInvestments = moves.filter(m => m.phase === 'invest')
+  S.financeHistory = S.financeHistory.filter(x => x.season !== currentSeason)
+  S.financeHistory.push({
+    season:currentSeason,
+    year:currentCalendarYear(),
+    clubs:S.allTeams.map(team => {
+      const snap = financeSnapshot(team, currentSeason)
+      return {
+        teamId:team.id, teamName:team.name, teamCC:team.cc, ...snap,
+        transferSpend:round1(seasonTransfers.filter(m => m.toId === team.id).reduce((sum,m) => sum+(m.signFee||0),0)),
+        transferSales:round1(seasonTransfers.filter(m => m.fromId === team.id).reduce((sum,m) => sum+(m.signFee||0),0)),
+        investment:round1(-seasonInvestments.filter(m => m.teamId === team.id).reduce((sum,m) => sum+(m.amount||0),0)),
+      }
+    }),
   })
 
-  // ── 9. Stat investment ───────────────────────────────────
-  // Teams spend a random fraction (ECON.investMin..investMax) of
-  // cash on stat upgrades; rest saved for signings. Yield per $1M
-  // = (90 - current) × ECON.yieldCoef. Stats capped at 90. Cash
-  // above CASH_CAP after the willing spend is forced into more.
-  S.allTeams.forEach(team => {
-    const cash = team.cashOnHand || 0
-    if (cash <= 0 || !team.seasonStats) return
-
-    const willingRatio = ECON.investMin + Math.random() * (ECON.investMax - ECON.investMin)
-    let spend = Math.round(cash * willingRatio)
-    const overCap = Math.max(0, cash - spend - CASH_CAP)
-    if (overCap > 0) spend += overCap
-    if (spend <= 0) return
-
-    const s = team.seasonStats
-    // Linear yield: $1M = ECON.yieldFlat points per stat (default 3).
-    // Each stat gets the spend × yieldFlat + ±1 random.
-    const gain = () => {
-      return Math.max(0, Math.round(spend * ECON.yieldFlat + gaussRand(1)))
-    }
-    const newStats = {
-      attack:    Math.min(90, s.attack    + gain()),
-      defense:   Math.min(90, s.defense   + gain()),
-      stamina:   Math.min(90, s.stamina   + gain()),
-      mental:    60,
-      setPieces: Math.min(90, s.setPieces + gain()),
-    }
-    team.seasonStats = newStats
-    team.cashOnHand = cash - spend
-
-    moves.push({
-      phase: 'invest', kind: 'team',
-      teamId: team.id, teamName: team.name, teamCC: team.cc,
-      amount: -spend, cashAfter: team.cashOnHand,
-      newOverall: Math.round((newStats.attack + newStats.defense + newStats.stamina + newStats.mental + newStats.setPieces) / 5),
-    })
-  })
-
-  // Refresh currentOverall snapshot for UI after decay+investment.
-  S.allTeams.forEach(team => {
-    if (!team.seasonStats) return
-    const s = team.seasonStats
-    team.currentOverall = Math.round((s.attack + s.defense + s.stamina + s.mental + s.setPieces) / 5)
-  })
-
-  // Career mults stay fresh — newly spawned rookies need 0.80,
-  // veterans who tipped into their last year need 0.90, etc.
   refreshCareerMults()
-
   S.lastMarket = moves
   return { moves }
 }
-
 
 // Backwards-compat: older callers may still invoke runTransfers.
 export function runTransfers() {
@@ -2438,6 +2425,7 @@ export function runTransfers() {
 // ── Reset for a new season ────────────────────────────────────
 export function startNewSeason() {
   S.season = (S.season || 1) + 1
+  S.year = currentCalendarYear() + 1
   S.phase = 'idle'
   S.champion = null
   S.groups = []

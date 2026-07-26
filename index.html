@@ -7,13 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/src/style.css">
-<!-- Twemoji renders flag/regional-indicator emoji as images so they
-     show up consistently on Windows (where the system fonts have no
-     flag glyphs at all) and other platforms with limited emoji
-     support. main.js calls `window.twemoji.parse(document.body)` after
-     each render. Fallback: if cdnjs is blocked, try unpkg, then
-     jsdelivr. If all fail, country codes will display as small badges
-     via CSS.  -->
+<!-- Twemoji keeps interface icons consistent across platforms.
+     Country flags are rendered locally as inline SVG, so they do not
+     depend on this CDN. Fallback: cdnjs → unpkg → jsdelivr. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/twemoji.min.js" crossorigin="anonymous"
   onerror="this.replaceWith(Object.assign(document.createElement('script'),{src:'https://unpkg.com/twemoji@14.0.2/dist/twemoji.min.js',crossOrigin:'anonymous',onerror:function(){this.replaceWith(Object.assign(document.createElement('script'),{src:'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js',crossOrigin:'anonymous'}))}}))"></script>
 </head>
@@ -29,7 +25,7 @@
       </div>
     </div>
     <div class="header-center">
-      <div class="season-badge">Season <span id="cur-season">1</span></div>
+      <div class="season-badge">Year <span id="cur-season">1956</span></div>
       <div id="phase-label" class="phase-label">Ready</div>
     </div>
     <div class="header-right">

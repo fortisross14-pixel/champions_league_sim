@@ -20,8 +20,9 @@ export const LEAGUES = [
 
 // ── Team data ─────────────────────────────────────────────────
 // Each team: { id, name, cc, league, money, hist }
-//   money = annual income in millions (6-12 baseline). GM bonuses
-//   can push effective income up to 14. This drives stat
+//   money = club financial/sporting tier (roughly 5-18). It drives
+//   both recurring revenue bands and the stat-generation center. GM bonuses
+//   can improve the effective tier. This drives stat
 //   generation: target stat = 41 + 4 × effective_money.
 //     12 → center 89 (top: RM, Bayern, Liverpool, Milan, Juve, MUN, Arsenal)
 //     11 → center 85 (BVB, Atlético, Inter, Porto, Ajax, Benfica, Spurs, Napoli)
@@ -34,6 +35,7 @@ export const LEAGUES = [
 //   contexts). Independent from money.
 
 export const SPAIN = [
+  { id:'bar',  name:'FC Barcelona',    league:'ESP', cc:'es', money:16, hist:190, colors:['#A50044','#004D98'] },
   { id:'rm',   name:'Real Madrid',     league:'ESP', cc:'es', money:16, hist:200, colors:['#FFFFFF','#FEBE10'] },
   { id:'atm',  name:'Atlético Madrid', league:'ESP', cc:'es', money:12, hist:80 , colors:['#CB3524','#FFFFFF'] },
   { id:'sev',  name:'Sevilla',         league:'ESP', cc:'es', money:8,  hist:40 , colors:['#FFFFFF','#CC0000'] },
