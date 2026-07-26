@@ -2074,3 +2074,57 @@ img.twemoji-img {
   .group-result-tab { min-width: 80px; flex-shrink: 0; }
   .group-results-detail { max-height: none; }
 }
+
+/* 2026 presentation upgrade: magazine, transfer reveals, mobile-safe overlays */
+body.modal-open { overflow: hidden; }
+.modal-x { position:sticky; top:0; margin-left:auto; z-index:20; display:flex; width:38px; height:38px; align-items:center; justify-content:center; border:1px solid rgba(255,255,255,.18); border-radius:50%; background:rgba(5,9,28,.92); color:var(--txt); font-size:18px; cursor:pointer; }
+.magazine-masthead { display:flex; justify-content:space-between; align-items:flex-end; padding:20px 0 14px; border-top:4px solid var(--txt); border-bottom:1px solid var(--txt3); margin-bottom:18px; }
+.magazine-name { font-family:var(--font-head); font-size:clamp(34px,7vw,72px); font-weight:900; letter-spacing:-.035em; line-height:.82; }
+.magazine-date,.magazine-edition,.mag-kicker { font-family:var(--font-head); text-transform:uppercase; letter-spacing:.16em; font-size:10px; color:var(--cyan); font-weight:700; }
+.magazine-edition { text-align:right; color:var(--txt2); }
+.mag-lead { padding:clamp(22px,5vw,54px); min-height:330px; display:flex; flex-direction:column; justify-content:flex-end; border-radius:18px; background:radial-gradient(circle at 80% 15%,rgba(66,128,255,.35),transparent 38%),linear-gradient(135deg,#171b47,#080d27 65%); border:1px solid rgba(78,233,255,.25); overflow:hidden; position:relative; }
+.mag-lead:after { content:'★'; position:absolute; right:4%; top:-18%; font-size:280px; color:rgba(255,255,255,.035); transform:rotate(12deg); }
+.mag-lead h1 { max-width:900px; font-family:var(--font-head); font-size:clamp(36px,6vw,76px); line-height:.94; margin:10px 0 12px; letter-spacing:-.025em; position:relative; z-index:1; }
+.mag-lead p { max-width:720px; font-size:15px; line-height:1.6; color:var(--txt2); position:relative; z-index:1; }
+.mag-story-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:14px; }
+.mag-story { border-top:3px solid var(--blue2); background:var(--bg2); padding:20px; min-height:190px; border-radius:0 0 12px 12px; }
+.mag-story h2 { font-family:var(--font-head); font-size:25px; line-height:1.05; margin:10px 0; }
+.mag-story p { color:var(--txt2); line-height:1.5; font-size:12px; }
+.mag-league { border-color:var(--gold); } .mag-market { border-color:#ff4081; } .mag-archive { border-color:var(--silver); }
+.transfer-reveal { min-height:min(680px,82vh); width:min(760px,100%); padding:clamp(18px,5vw,58px); display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; background:radial-gradient(circle at 50% 5%,rgba(78,233,255,.19),transparent 36%); }
+.transfer-reveal-count { color:var(--txt3); font-family:var(--font-head); letter-spacing:.16em; font-size:11px; }
+.transfer-reveal-kicker { margin-top:16px; color:var(--cyan); font-family:var(--font-head); letter-spacing:.2em; font-size:13px; }
+.transfer-reveal-tier { margin:16px 0 6px; }
+.transfer-reveal h1 { font-family:var(--font-head); font-size:clamp(46px,10vw,92px); line-height:.9; margin:8px 0; }
+.transfer-reveal-pos { color:var(--txt3); letter-spacing:.2em; font-size:11px; }
+.transfer-route { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:12px; font-family:var(--font-head); font-size:clamp(18px,4vw,28px); font-weight:700; margin:28px 0 14px; }
+.transfer-route span { color:var(--cyan); }
+.transfer-figures { display:flex; justify-content:center; flex-wrap:wrap; gap:10px; }
+.transfer-figures span { padding:8px 12px; border:1px solid var(--bg5); border-radius:20px; color:var(--txt2); font-size:11px; }
+.transfer-figures b { color:var(--gold); }
+.transfer-reveal-headline { max-width:620px; margin:26px 0; font-family:var(--font-head); font-size:22px; color:var(--txt2); }
+.transfer-actions { display:flex; gap:10px; }
+
+@media(max-width:760px){
+  .header { padding:8px 10px; flex-wrap:wrap; gap:8px; }
+  .header-center { order:3; width:100%; justify-content:center; }
+  .header-title { font-size:15px; } .header-sub,.saved-stamp { display:none; }
+  .header-right { gap:5px; } .header-right .btn { padding:7px 9px; font-size:10px; }
+  .nav { overflow-x:auto; justify-content:flex-start; scrollbar-width:none; position:sticky; top:0; z-index:30; }
+  .nav::-webkit-scrollbar{display:none}.nav-tab{flex:0 0 auto;padding:10px 12px;font-size:10px}
+  .panels { padding:12px 10px 90px; }
+  .match-popup-modal { align-items:stretch!important; justify-content:stretch!important; padding:0!important; overflow:hidden!important; }
+  .match-popup-inner { width:100%!important; max-width:none!important; height:100dvh!important; max-height:100dvh!important; border-radius:0!important; overflow-y:auto!important; overscroll-behavior:contain; padding:12px!important; }
+  .modal-x { top:4px; }
+  .group-results-wrap { height:auto!important; max-height:none!important; }
+  .group-results-detail { overflow:visible!important; max-height:none!important; }
+  .mag-story-grid { grid-template-columns:1fr; }
+  .mag-lead { min-height:290px; padding:24px 20px; }
+  .transfer-reveal { min-height:calc(100dvh - 62px); padding:20px 14px 30px; }
+  .transfer-actions { width:100%; position:sticky; bottom:0; padding:10px 0; background:linear-gradient(transparent,var(--bg1) 25%); }
+  .transfer-actions .btn { flex:1; }
+  .qualify-grid { grid-template-columns:1fr!important; }
+  .data-table { min-width:620px; }
+  .table-wrap,.card:has(.data-table) { overflow-x:auto; }
+}
+.domestic-history-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.domestic-history-title{font-family:var(--font-head);font-size:18px;font-weight:800;margin-bottom:10px;color:var(--gold)}.domestic-history-list{display:flex;flex-direction:column;gap:7px}.domestic-history-list>div{display:flex;justify-content:space-between;gap:12px;padding-bottom:7px;border-bottom:1px solid var(--bg4);font-size:11px}.domestic-history-list span{color:var(--txt3)}.domestic-history-list strong{text-align:right}@media(max-width:760px){.domestic-history-grid{grid-template-columns:1fr}}

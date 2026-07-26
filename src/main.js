@@ -123,6 +123,7 @@ window.switchTab = function (tab) {
   if (tab === 'stars')    renderStars()
   if (tab === 'teams')    renderTeams()
   if (tab === 'history')  renderHistory()
+  if (tab === 'magazine') renderMagazine()
   if (tab === 'season')   renderSeason()
   if (tab === 'play')     renderPlay()
   parseEmoji(document.body)
@@ -180,10 +181,11 @@ window.handleMain = async function () {
     // coach changes, youth fills).
     runMarket()
     S.phase = 'market'
+    S.magazineReadSeason = 0
     await autoSave()
     updatePhaseUI()
     toast('Transfer market closed. Local leagues next.')
-    switchTab('play')
+    showTransferReveal()
   } else if (p === 'market') {
     runLocalLeagues()
     runQualification()
@@ -281,6 +283,7 @@ function showMatchPreview(t1, t2, roundName, onStart) {
   const inner = $('match-popup-inner')
   popup.classList.add('match-popup-modal')
   popup.style.display = 'flex'
+  document.body.classList.add('modal-open')
 
   // Per-team CL stats this season (read from S.teams which holds the
   // running counters that getEffStats also reads).
@@ -437,6 +440,7 @@ function showGroupResultsPopup(results, roundName, onClose) {
   const inner = $('match-popup-inner')
   popup.classList.add('match-popup-modal')
   popup.style.display = 'flex'
+  document.body.classList.add('modal-open')
 
   let selected = 0
   const render = () => {
@@ -527,6 +531,7 @@ window.cancelPreview = function () {
   const popup = $('match-popup')
   popup.style.display = 'none'
   popup.classList.remove('match-popup-modal')
+  document.body.classList.remove('modal-open')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -543,6 +548,7 @@ function showMatchPopup(r, roundName, onClose) {
   const inner = $('match-popup-inner')
   popup.classList.add('match-popup-modal')
   popup.style.display = 'flex'
+  document.body.classList.add('modal-open')
   _playbackSkip = false
   if (_playbackTimer) { clearTimeout(_playbackTimer); _playbackTimer = null }
 
@@ -766,12 +772,108 @@ window.closePlayback = function () {
   const popup = $('match-popup')
   popup.style.display = 'none'
   popup.classList.remove('match-popup-modal')
+  document.body.classList.remove('modal-open')
   if (_playbackTimer) { clearTimeout(_playbackTimer); _playbackTimer = null }
   if (window._matchOnClose) {
     const cb = window._matchOnClose
     window._matchOnClose = null
     cb()
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// MAGAZINE & TRANSFER REVEAL
+// ─────────────────────────────────────────────────────────────
+function marketHeadlineMove() {
+  const moves = (S.lastMarket || []).filter(m => ['transfer','fa_sign','renew','retirement'].includes(m.phase) && m.kind !== 'team')
+  const tierRank = { generational:6, legendary:5, epic:4, rare:3, uncommon:2, common:1 }
+  return [...moves].sort((a,b) => {
+    const tr = (tierRank[b.tier]||0) - (tierRank[a.tier]||0)
+    if (tr) return tr
+    return (b.signFee||0) - (a.signFee||0)
+  })[0] || null
+}
+
+function transferHeadline(m) {
+  if (!m) return 'A quiet market leaves Europe waiting for the football to begin.'
+  if (m.phase === 'retirement') return `${m.name} closes the book on a memorable career.`
+  if (m.phase === 'renew') return `${m.name} rejects the market and commits to ${m.to}.`
+  if (m.phase === 'fa_sign') return `${m.to} win the race for free agent ${m.name}.`
+  return `${m.to} land ${m.name} in the deal of the summer.`
+}
+
+function buildMagazineStories() {
+  const stories = []
+  const lead = marketHeadlineMove()
+  if (lead) stories.push({ kicker:'TRANSFER EXCLUSIVE', icon:'🚨', title:transferHeadline(lead), body: lead.phase === 'transfer'
+    ? `${lead.from} receive $${lead.saleValue||lead.signFee||0}M, while ${lead.to} add a ${tierLabel(lead.tier).toLowerCase()} ${lead.pos || 'star'} on a ${lead.contractYears||'?'}-year deal. The balance of power may have shifted before a ball is kicked.`
+    : `${lead.name} becomes one of the defining names of Season ${S.season}'s offseason.`, tone:'lead' })
+
+  const transfers=(S.lastMarket||[]).filter(m=>m.phase==='transfer')
+  if (transfers.length) {
+    const spenders={}
+    transfers.forEach(m=>spenders[m.to]=(spenders[m.to]||0)+(m.signFee||0))
+    const top=Object.entries(spenders).sort((a,b)=>b[1]-a[1])[0]
+    if(top) stories.push({kicker:'MARKET WATCH',icon:'💰',title:`${top[0]} are the summer's biggest buyers`,body:`${transfers.length} permanent transfers were completed. ${top[0]} led the spending with $${top[1]}M in fees.`,tone:'market'})
+  }
+
+  const leagues=Object.values(S.localLeagueResults||{})
+  leagues.slice(0,6).forEach(r=>{
+    const champ=r.standings?.[0], runner=r.standings?.[1]
+    if(!champ) return
+    const gap=runner ? champ.score-runner.score : 0
+    stories.push({kicker:r.league?.name?.toUpperCase()||'DOMESTIC LEAGUE',icon:'🏆',title:`${champ.team.name} rule ${r.league?.name||'their league'}`,body: gap >= 8 ? `A dominant campaign ended with a ${gap}-point performance gap over ${runner.team.name}.` : runner ? `${runner.team.name} pushed them to the finish, but ${champ.team.name} held their nerve.` : 'A championship season earns them a place among Europe’s elite.',tone:'league'})
+  })
+
+  const recent=[...(S.allMatchResults||[])].reverse().slice(0,8)
+  recent.forEach(r=>{
+    const margin=Math.abs(r.g1-r.g2), total=r.g1+r.g2
+    if(total>=6 || margin>=4) stories.push({kicker:'EUROPEAN NIGHT',icon:'⚽',title:`${r.t1name} ${r.g1}–${r.g2} ${r.t2name}`,body: total>=6 ? 'A chaotic classic delivered goals, momentum swings and a result that will live in this season’s memory.' : 'One side delivered a statement performance that the rest of Europe cannot ignore.',tone:'match'})
+  })
+
+  const hist=(S.history||[]).slice(-1)[0]
+  if(hist) stories.push({kicker:'FROM THE ARCHIVE',icon:'📚',title:`${hist.championName} remain the team everyone is chasing`,body:`Last season’s champions return as the reference point after defeating ${hist.runnerUpName||'their final opponent'} in the decisive match.`,tone:'archive'})
+  return stories
+}
+
+function renderMagazine() {
+  const el=$('tab-magazine'); if(!el) return
+  const stories=buildMagazineStories()
+  const lead=stories[0]
+  el.innerHTML=`
+    <div class="magazine-masthead">
+      <div><div class="magazine-name">EUROPE TODAY</div><div class="magazine-date">SEASON ${S.season} · THE CHAMPIONS LEAGUE WORLD</div></div>
+      <div class="magazine-edition">DAILY<br>EDITION</div>
+    </div>
+    ${lead ? `<article class="mag-lead"><div class="mag-kicker">${lead.icon} ${lead.kicker}</div><h1>${lead.title}</h1><p>${lead.body}</p></article>` : `<div class="empty">Begin the season to create the first edition.</div>`}
+    <div class="mag-story-grid">${stories.slice(1).map(x=>`<article class="mag-story mag-${x.tone}"><div class="mag-kicker">${x.icon} ${x.kicker}</div><h2>${x.title}</h2><p>${x.body}</p></article>`).join('')}</div>`
+}
+
+window.closeTransferReveal=function(){
+  const p=$('match-popup'); p.style.display='none'; p.classList.remove('match-popup-modal'); document.body.classList.remove('modal-open'); switchTab('magazine')
+}
+window.revealTransferAt=function(i){
+  const cards=[...(S.lastMarket||[])].filter(m=>['transfer','fa_sign','renew','retirement'].includes(m.phase)&&m.kind!=='team')
+    .sort((a,b)=>({generational:6,legendary:5,epic:4,rare:3,uncommon:2,common:1}[b.tier]||0)-({generational:6,legendary:5,epic:4,rare:3,uncommon:2,common:1}[a.tier]||0)||(b.signFee||0)-(a.signFee||0)).slice(0,8)
+  const m=cards[i]; if(!m) return closeTransferReveal()
+  const inner=$('match-popup-inner')
+  const movement=m.phase==='retirement' ? `${flag(m.fromCC)} ${m.from} → Retirement` : m.phase==='renew' ? `${flag(m.toCC)} ${m.to}` : `${m.from?flag(m.fromCC)+' '+m.from:'Free Agency'} <span>→</span> ${flag(m.toCC)} ${m.to}`
+  inner.innerHTML=`<button class="modal-x" onclick="closeTransferReveal()" aria-label="Close">✕</button>
+    <div class="transfer-reveal">
+      <div class="transfer-reveal-count">DEAL ${i+1} / ${cards.length}</div>
+      <div class="transfer-reveal-kicker">${i===0?'🚨 BREAKING NEWS':'TRANSFER WINDOW'}</div>
+      <div class="transfer-reveal-tier">${m.tier?tierBadge(m.tier):''}</div>
+      <h1>${m.name}</h1><div class="transfer-reveal-pos">${m.pos|| (m.kind==='coach'?'HEAD COACH':'')}</div>
+      <div class="transfer-route">${movement}</div>
+      <div class="transfer-figures">${m.signFee?`<span><b>$${m.signFee}M</b> fee</span>`:''}${m.salary?`<span><b>$${m.salary}M</b> / year</span>`:''}${m.contractYears?`<span><b>${m.contractYears}</b> years</span>`:''}</div>
+      <div class="transfer-reveal-headline">${transferHeadline(m)}</div>
+      <div class="transfer-actions"><button class="btn" onclick="closeTransferReveal()">Read Magazine</button><button class="btn btn-primary" onclick="revealTransferAt(${i+1})">${i+1<cards.length?'Reveal next deal':'Finish window'} →</button></div>
+    </div>`
+}
+function showTransferReveal(){
+  const cards=(S.lastMarket||[]).filter(m=>['transfer','fa_sign','renew','retirement'].includes(m.phase)&&m.kind!=='team')
+  if(!cards.length){ switchTab('play'); return }
+  const p=$('match-popup'); p.classList.add('match-popup-modal'); p.style.display='flex'; document.body.classList.add('modal-open'); revealTransferAt(0)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2363,6 +2465,15 @@ function renderHistory() {
 
   // Body — pick which sub-tab to render.
   let body = ''
+  const domesticRows = [...(S.history || [])].reverse().flatMap(h => (h.localChampions || []).map(c => ({ season:h.season, ...c })))
+  if (domesticRows.length) {
+    const byLeague = {}
+    domesticRows.forEach(r => { (byLeague[r.leagueName || r.leagueId || 'League'] ||= []).push(r) })
+    seasonsHTML += `<div class="sec">DOMESTIC WINNERS BY YEAR</div><div class="domestic-history-grid">${Object.entries(byLeague).map(([league,rows])=>`
+      <div class="card domestic-history-card"><div class="domestic-history-title">${league}</div>
+      <div class="domestic-history-list">${rows.slice(0,12).map(r=>`<div><span>Season ${r.season}</span><strong>${flag(r.cc||'')} ${r.teamName||r.championName||'—'}</strong></div>`).join('')}</div></div>`).join('')}</div>`
+  }
+
   if (historySubTab === 'teams') {
     body = renderHistoryTeams(teamStatsList)
   } else {
