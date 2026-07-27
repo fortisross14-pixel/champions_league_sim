@@ -1454,7 +1454,10 @@ export function buildClassicBracket() {
   const teams = shuffle([...S.teams])
   const matches = []
   for (let i=0; i<teams.length; i+=2) {
-    if (teams[i] && teams[i+1]) matches.push({ t1:teams[i], t2:teams[i+1], played:false, result:null })
+    if (teams[i] && teams[i+1]) matches.push({
+      t1:teams[i], t2:teams[i+1], played:false, result:null,
+      leg:1, firstLegResult:null, secondLegResult:null,
+    })
   }
   S.groups = []
   S.groupMatches = []
@@ -1754,8 +1757,80 @@ export function buildKnockout() {
   S.knockoutRounds = [{ name:'Round of 16', matches:r16 }]
 }
 
+function resolveAggregatePenaltyWinner(t1, t2) {
+  const e1 = getEffStats(t1, true)
+  const e2 = getEffStats(t2, true)
+  const stars1 = t1.stars || []
+  const stars2 = t2.stars || []
+  let p1 = e1.mental + rand(-10,10)
+  let p2 = e2.mental + rand(-10,10)
+  if (stars1.some(s => s.trait?.id === 'penalty_specialist')) p1 += 8
+  if (stars2.some(s => s.trait?.id === 'penalty_specialist')) p2 += 8
+  return p1 >= p2 ? t1 : t2
+}
+
 export function playKnockoutMatch(match) {
   if (match.played) return
+
+  // The historic European Cup is played over two legs. The first leg may
+  // finish level. After the second leg, aggregate goal difference decides
+  // the tie; an aggregate draw goes straight to penalties (no extra time).
+  if (S.era === 'european_cup') {
+    if (!match.firstLegResult) {
+      const first = simMatch(match.t1, match.t2, true, true)
+      first.tieLeg = 1
+      first.tieT1 = match.t1
+      first.tieT2 = match.t2
+      first.aggregate1 = first.g1
+      first.aggregate2 = first.g2
+      first.aggregateWinner = null
+      match.firstLegResult = first
+      match.leg = 2
+      applyMentalityDelta(first)
+      trackMatchStats(first, 'knockout')
+      autoSave()
+      return first
+    }
+
+    const second = simMatch(match.t2, match.t1, true, true)
+    const aggregate1 = match.firstLegResult.g1 + second.g2
+    const aggregate2 = match.firstLegResult.g2 + second.g1
+    const winner = aggregate1 === aggregate2
+      ? resolveAggregatePenaltyWinner(match.t1, match.t2)
+      : (aggregate1 > aggregate2 ? match.t1 : match.t2)
+    const penalties = aggregate1 === aggregate2
+
+    second.tieLeg = 2
+    second.tieT1 = match.t1
+    second.tieT2 = match.t2
+    second.aggregate1 = aggregate1
+    second.aggregate2 = aggregate2
+    second.aggregateWinner = winner
+    second.winner = winner
+    second.penalties = penalties
+    second.effects = [...(second.effects || []), penalties
+      ? `🥅 Aggregate level — ${winner.name} win on penalties!`
+      : `🏁 ${winner.name} advance ${aggregate1}–${aggregate2} on aggregate.`]
+
+    match.secondLegResult = second
+    match.played = true
+    match.leg = 2
+    // The bracket continues to show the tie score in the original draw order.
+    match.result = {
+      ...second,
+      t1:match.t1, t2:match.t2,
+      g1:aggregate1, g2:aggregate2,
+      winner, penalties,
+      firstLegResult:match.firstLegResult,
+      secondLegResult:second,
+      aggregate1, aggregate2,
+    }
+    applyMentalityDelta(second)
+    trackMatchStats(second, 'knockout')
+    autoSave()
+    return second
+  }
+
   const r = simMatch(match.t1, match.t2, false, true)
   match.played = true
   match.result = r
@@ -1795,7 +1870,7 @@ export function advanceKnockout() {
   const names = { 8:'Quarter-finals', 4:'Semi-finals', 2:'Final' }
   const newMatches = []
   for (let i = 0; i < winners.length; i += 2) {
-    newMatches.push({ t1:winners[i], t2:winners[i+1], played:false, result:null })
+    newMatches.push({ t1:winners[i], t2:winners[i+1], played:false, result:null, leg:1, firstLegResult:null, secondLegResult:null })
   }
   S.knockoutRounds.push({ name: names[winners.length] || 'Next Round', matches:newMatches })
   autoSave()

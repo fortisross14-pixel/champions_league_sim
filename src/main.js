@@ -345,6 +345,11 @@ function playNextGroupMatch() {
 }
 
 // ── Knockout stage ────────────────────────────────────────────
+function knockoutMatchLabel(roundName, match) {
+  if (S.era !== 'european_cup') return roundName
+  return `${roundName} · LEG ${match?.firstLegResult ? 2 : 1} OF 2`
+}
+
 function playNextKnockoutMatch() {
   const round = S.knockoutRounds[S.knockoutRounds.length - 1]
   if (!round) return
@@ -365,14 +370,17 @@ function playNextKnockoutMatch() {
     return
   }
   const match = unplayed[0]
-  showMatchPreview(match.t1, match.t2, round.name, () => {
+  const secondClassicLeg = S.era === 'european_cup' && !!match.firstLegResult
+  const previewT1 = secondClassicLeg ? match.t2 : match.t1
+  const previewT2 = secondClassicLeg ? match.t1 : match.t2
+  showMatchPreview(previewT1, previewT2, knockoutMatchLabel(round.name, match), () => {
     const result = playKnockoutMatch(match)
     const slug = String(round.name || 'knockout').toLowerCase().replace(/[^a-z0-9]+/g,'-')
     recordMagazineMatch(result, { key:`s${S.season}:ko:${slug}`, title:round.name, stage:'knockout' })
     const roundComplete = !round.matches.some(m => !m.played)
     if (roundComplete) finalizeKnockoutMagazine(round)
     autoSave()
-    showMatchPopup(result, round.name, () => {
+    showMatchPopup(result, knockoutMatchLabel(round.name, match), () => {
       renderBracket()
       updatePhaseUI()
       const left = round.matches.filter(m => !m.played).length
@@ -510,7 +518,7 @@ window.skipPreviewedMatch = function () {
     const match = round.matches.find(m => !m.played)
     if (!match) return
     const result = playKnockoutMatch(match)
-    showGroupResultsPopup([result], round.name, () => {
+    showGroupResultsPopup([result], knockoutMatchLabel(round.name, match), () => {
       renderBracket()
       updatePhaseUI()
       const left = round.matches.filter(m => !m.played).length
@@ -543,6 +551,20 @@ window.skipPreviewedGroup = function () {
 // the games on the left and the full completed-game view on the
 // right. For a single match, it just shows the one result with no
 // tabs.
+function renderTieOutcome(r) {
+  if (!r?.tieLeg) {
+    if (!r?.penalties || !r?.winner) return ''
+    return `<div class="tie-outcome penalties"><strong>${r.winner.name}</strong> WIN ON PENALTIES</div>`
+  }
+  const original1 = r.tieT1?.name || r.t1?.name || 'Team 1'
+  const original2 = r.tieT2?.name || r.t2?.name || 'Team 2'
+  if (r.tieLeg === 1) {
+    return `<div class="tie-outcome"><span>FIRST LEG</span><strong>${original1} ${r.aggregate1}–${r.aggregate2} ${original2}</strong><small>Second leg still to play</small></div>`
+  }
+  const penaltyText = r.penalties ? ' · WON ON PENALTIES' : ' · ADVANCE ON AGGREGATE'
+  return `<div class="tie-outcome ${r.penalties ? 'penalties' : 'aggregate'}"><span>AGGREGATE ${r.aggregate1}–${r.aggregate2}</span><strong>${r.aggregateWinner?.name || r.winner?.name}${penaltyText}</strong></div>`
+}
+
 function showGroupResultsPopup(results, roundName, onClose) {
   const popup = $('match-popup')
   const inner = $('match-popup-inner')
@@ -554,7 +576,7 @@ function showGroupResultsPopup(results, roundName, onClose) {
   const render = () => {
     const r = results[selected]
     const tabs = results.map((res, i) => {
-      const winner = res.g1 > res.g2 ? res.t1 : res.g2 > res.g1 ? res.t2 : null
+      const winner = res.winner || (res.g1 > res.g2 ? res.t1 : res.g2 > res.g1 ? res.t2 : null)
       const winnerName = winner ? winner.name : 'Draw'
       return `<div class="group-result-tab ${i === selected ? 'active' : ''}" onclick="window.selectGroupResult(${i})">
         <div class="group-result-tab-num">M${i + 1}</div>
@@ -599,6 +621,7 @@ function showGroupResultsPopup(results, roundName, onClose) {
             <div class="playback-team-stripe"></div>
           </div>
         </div>
+        ${renderTieOutcome(r)}
         <div class="playback-events">
           ${events.length === 0
             ? '<div class="playback-event muted">No goals.</div>'
@@ -700,6 +723,7 @@ function showMatchPopup(r, roundName, onClose) {
           </div>
         </div>
 
+        ${isFinal ? renderTieOutcome(r) : ''}
         <div class="playback-progress-wrap">
           <div class="playback-progress" style="width:${Math.min(100, (currentMinute/90)*100)}%"></div>
         </div>

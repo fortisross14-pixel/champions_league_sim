@@ -2320,3 +2320,42 @@ body.era-classic .round-report-issue{background:linear-gradient(145deg,#242424,#
   .latest-edition-strip{align-items:flex-start;flex-wrap:wrap}.latest-edition-strip strong{flex-basis:60%}
   .latest-edition-strip button{margin-left:auto}
 }
+
+/* Historic European Cup two-leg result emphasis */
+.tie-outcome {
+  margin: 0 16px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.045);
+  text-align: center;
+  display: grid;
+  gap: 3px;
+  font-family: var(--font-head);
+  letter-spacing: .04em;
+}
+.tie-outcome span,
+.tie-outcome small {
+  color: var(--txt2);
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+.tie-outcome strong {
+  color: var(--txt);
+  font-size: 14px;
+}
+.tie-outcome.aggregate {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+.tie-outcome.penalties {
+  border: 2px solid var(--gold);
+  background: color-mix(in srgb, var(--gold) 15%, transparent);
+}
+.tie-outcome.penalties strong {
+  color: var(--gold);
+  font-size: 16px;
+}
+@media (max-width: 600px) {
+  .tie-outcome { margin: 0 8px 10px; padding: 9px 10px; }
+  .tie-outcome.penalties strong { font-size: 14px; }
+}
