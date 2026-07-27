@@ -2268,3 +2268,55 @@ body.era-classic .bracket-team.loser{opacity:.48}
 .historic-legend-badge,.historic-name-mark{display:inline-flex;align-items:center;border:1px solid var(--gold);color:var(--gold);font-family:var(--font-head);font-size:8px;letter-spacing:.12em;padding:3px 6px;border-radius:20px;background:rgba(245,200,66,.08)}
 .historic-name-mark{margin-left:7px;vertical-align:3px;font-size:7px;padding:2px 5px}
 body.era-classic .historic-legend-badge,body.era-classic .historic-name-mark{border-color:#d8d1bf;color:#d8d1bf;background:rgba(255,255,255,.05)}
+
+/* ── Match data expansion: xG, shots on target and discipline ── */
+.playback-stats-grid .stat-xg{color:var(--cyan);font-variant-numeric:tabular-nums}
+.card-stat{display:flex;align-items:center;gap:6px}
+.playback-stats-grid .card-stat:nth-child(3n+1){justify-content:flex-start}
+.playback-stats-grid .card-stat:nth-child(3n){justify-content:flex-end}
+.yellow-card-dot,.red-card-dot{display:inline-block;width:8px;height:12px;border-radius:1px;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+.yellow-card-dot{background:#ffd43b;border:1px solid #f3b700}
+.red-card-dot{background:#ef4444;border:1px solid #b91c1c}
+
+/* ── Magazine: live editions and round archive ─────────────── */
+.latest-edition-strip{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:9px 11px;border:1px solid var(--blue2);border-radius:9px;background:linear-gradient(90deg,rgba(30,109,255,.16),rgba(78,233,255,.04))}
+.latest-edition-strip span{font-family:var(--font-head);font-size:9px;letter-spacing:.14em;color:var(--cyan)}
+.latest-edition-strip strong{font-family:var(--font-head);font-size:13px;letter-spacing:.05em;flex:1}
+.latest-edition-strip button{border:0;background:none;color:var(--blue3);font-family:var(--font-head);font-weight:700;font-size:11px;cursor:pointer}
+.latest-edition-strip button:hover{text-decoration:underline}
+.round-report-list{display:flex;flex-direction:column;gap:14px}
+.round-report-issue{overflow:hidden;border:1px solid var(--bg5);border-radius:12px;background:linear-gradient(145deg,var(--bg2),rgba(15,24,64,.82))}
+.round-report-issue.live{border-color:var(--blue2);box-shadow:0 0 0 1px rgba(74,154,255,.10)}
+.round-report-issue>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;border-bottom:1px solid var(--bg4);background:rgba(255,255,255,.025)}
+.round-report-issue>header span{font-family:var(--font-head);font-size:8px;letter-spacing:.16em;color:var(--txt3)}
+.round-report-issue>header h2{font-family:var(--font-head);font-size:23px;line-height:1;margin-top:2px}
+.round-report-issue>header b{font-family:var(--font-head);font-size:8px;letter-spacing:.13em;color:var(--green);padding:4px 7px;border:1px solid color-mix(in srgb,var(--green) 55%,transparent);border-radius:20px;white-space:nowrap}
+.round-report-issue.live>header b{color:var(--cyan);border-color:rgba(78,233,255,.35)}
+.round-report-stories{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0}
+.round-report-story{padding:15px;border-right:1px solid var(--bg4);border-bottom:1px solid var(--bg4);min-height:145px}
+.round-report-story:nth-child(2n){border-right:0}
+.round-report-story h3{font-family:var(--font-head);font-size:19px;line-height:1.08;margin:5px 0 7px}
+.round-report-story p{font-size:11px;line-height:1.55;color:var(--txt2)}
+.round-report-story.mag-elimination{background:linear-gradient(135deg,rgba(229,57,53,.13),transparent)}
+.round-report-story.mag-player{background:linear-gradient(135deg,rgba(245,200,66,.09),transparent)}
+.round-report-story.mag-round{background:linear-gradient(135deg,rgba(74,154,255,.08),transparent)}
+
+/* Historical palette uses a light neutral as --blue. Any control that uses
+   that fill must switch to dark text for accessible contrast. */
+body.era-classic .btn-primary,
+body.era-classic .sub-tab.active,
+body.era-classic .sort-btn.active,
+body.era-classic .upcoming-next{color:#111}
+body.era-classic .btn-primary:hover{background:#fff;color:#111}
+body.era-classic .latest-edition-strip{border-color:#d8d1bf;background:linear-gradient(90deg,rgba(239,235,224,.13),rgba(255,255,255,.025))}
+body.era-classic .latest-edition-strip span,
+body.era-classic .latest-edition-strip button,
+body.era-classic .playback-stats-grid .stat-xg{color:#e7dfc6}
+body.era-classic .round-report-issue{background:linear-gradient(145deg,#242424,#171717);border-color:#444}
+
+@media(max-width:700px){
+  .round-report-stories{grid-template-columns:1fr}
+  .round-report-story,.round-report-story:nth-child(2n){border-right:0}
+  .latest-edition-strip{align-items:flex-start;flex-wrap:wrap}.latest-edition-strip strong{flex-basis:60%}
+  .latest-edition-strip button{margin-left:auto}
+}

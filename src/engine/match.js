@@ -3,7 +3,8 @@
 //
 //   1. Effective ratings (base + star bonuses + coach bonuses
 //      + tournament mentality delta + active traits).
-//   2. Match stats — shots, possession, corners — computed in
+//   2. Match stats — shots, shots on target, xG, possession,
+//      corners and discipline — computed in
 //      two phases: first 60' and last 30'. Stat-side traits add
 //      to / subtract from these. Stamina shapes the last 30.
 //   3. Raw goals — shot-conversion + possession bonus + corner
@@ -15,8 +16,7 @@
 //   7. Build timeline, tranches, mentality changes, ratings.
 //
 // The simMatch return shape stays compatible with what the UI
-// reads (g1, g2, shots, possession, corners, timeline, tranches,
-// effects, starRatings, mentalityChanges).
+// reads, while also exposing shots on target, xG and cards.
 
 export const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -203,8 +203,45 @@ function computeMatchStats(myEff, oppEff, myStars, oppStars, myCoachTraitId, opp
   const totalCorners = Math.round(corners60 + corners30)
   const finalShare   = clamp(possShare60 * 0.67 + possShare30 * 0.33, 0.25, 0.75)
 
+  // Shot accuracy is a second output of the team-quality matchup, not
+  // a random label pasted onto the final score. Attack, mentality and
+  // precision improve it; elite defending and goalkeeping suppress it.
+  let accuracy = 0.30
+    + (myEff.attack - oppEff.defense) * 0.0021
+    + (myEff.mental - 75) * 0.0011
+    + (finalShare - 0.5) * 0.18
+  const precise = findStarTraitTier(myStars, 'precise_shooting')
+  if (precise === 'legendary') accuracy += 0.09
+  else if (precise === 'epic') accuracy += 0.055
+  const lastDitch = findStarTraitTier(oppStars, 'last_ditch')
+  if (lastDitch === 'legendary') accuracy -= 0.07
+  else if (lastDitch === 'epic') accuracy -= 0.04
+  const catlike = findStarTraitTier(oppStars, 'catlike_reflexes')
+  if (catlike === 'legendary') accuracy -= 0.035
+  else if (catlike === 'epic') accuracy -= 0.02
+  accuracy = clamp(accuracy, 0.20, 0.58)
+  const shotsOnTarget = clamp(Math.round(totalShots * accuracy + gaussRand(0.75)), 0, totalShots)
+
+  // xG is generated before goals and deliberately remains noisy enough
+  // that a side can overperform or underperform it. Open-play chances,
+  // shots on target, possession pressure and set pieces each contribute.
+  let openPlayXG = totalShots * 0.038 + shotsOnTarget * 0.145
+  openPlayXG += clamp((myEff.attack - oppEff.defense) / 75, -0.28, 0.42)
+  let possessionXG = finalShare >= 0.62 ? 0.20 : finalShare >= 0.55 ? 0.10 : 0
+  if (teamHasStarTrait(myStars, 'useful_possession')) possessionXG *= 1.45
+  if (myCoachTraitId === 'counter_attack' && finalShare < 0.48) possessionXG += 0.18
+  let setPieceXG = totalCorners * clamp(0.018 + (myEff.setPieces - 70) * 0.00035, 0.008, 0.042)
+  if (myCoachTraitId === 'set_piece_specialist') setPieceXG *= 1.35
+  if (teamHasStarTrait(myStars, 'dead_ball_specialist')) setPieceXG *= 1.35
+  if (lastDitch === 'legendary') openPlayXG *= 0.88
+  else if (lastDitch === 'epic') openPlayXG *= 0.94
+  const xG = Math.round(clamp(openPlayXG + possessionXG + setPieceXG, 0.10, 4.80) * 100) / 100
+
   return {
     shots: totalShots,
+    shotsOnTarget,
+    xG,
+    xGBreakdown: { openPlayXG, possessionXG, setPieceXG },
     corners: totalCorners,
     possessionShare: finalShare,
     shots60: Math.round(shots60), shots30: Math.round(shots30),
@@ -212,6 +249,28 @@ function computeMatchStats(myEff, oppEff, myStars, oppStars, myCoachTraitId, opp
     possShare60, possShare30,
     myStaminaEff,
   }
+}
+
+// Discipline is produced from the same matchup inputs. Aggressive pressing,
+// knockout intensity, low mentality and being repeatedly exposed defensively
+// all increase cards. Red cards are uncommon but meaningfully affect the xG
+// and possession generated before goals are resolved.
+function computeDiscipline(myEff, oppEff, myCoachTraitId, isKO) {
+  let yellowBase = 1.45
+    + Math.max(0, oppEff.attack - myEff.defense) * 0.025
+    + Math.max(0, 70 - myEff.mental) * 0.018
+    + (isKO ? 0.22 : 0)
+  if (myCoachTraitId === 'gegenpress') yellowBase += 0.75
+  if (myCoachTraitId === 'high_press') yellowBase += 0.45
+  if (myCoachTraitId === 'park_the_bus') yellowBase += 0.25
+  if (myCoachTraitId === 'catenaccio') yellowBase += 0.18
+  const yellow = clamp(Math.round(yellowBase + gaussRand(1.05)), 0, 7)
+  let redChance = 0.018 + yellow * 0.011
+  redChance += Math.max(0, 65 - myEff.mental) * 0.0012
+  if (myCoachTraitId === 'gegenpress') redChance += 0.012
+  if (isKO) redChance += 0.006
+  const red = Math.random() < clamp(redChance, 0.01, 0.14) ? 1 : 0
+  return { yellow, red }
 }
 
 // ── Convert match stats to raw goals ─────────────────────────
@@ -233,10 +292,12 @@ function statsToGoals(myStats, myEff, myStars, oppStars, possessionPct, myCoachT
 
   // Use a uniform distribution over the conversion range to give
   // the match plenty of variance — sometimes the mega-attack team
-  // converts 5%, sometimes 35%. This prevents every blowout from
-  // hitting the normalization cap.
+  // converts 5%, sometimes 35%. xG supplies a second, quality-based
+  // signal so goals are driven by both volume and chance quality.
   const conv = convMin + Math.random() * (convMax - convMin)
-  let shotGoals = myStats.shots * conv
+  const legacyShotGoals = myStats.shots * conv
+  const xGFinish = myStats.xG * (0.58 + Math.random() * 0.92)
+  let shotGoals = legacyShotGoals * 0.72 + xGFinish * 0.28
 
   const catlikeTier = findStarTraitTier(oppStars, 'catlike_reflexes')
   if (catlikeTier === 'legendary' || catlikeTier === 'epic') {
@@ -397,7 +458,7 @@ function attributeGoals(team, totalGoals, breakdown) {
   // + tier. Lower-tier stars without matching traits will
   // mostly only claim shot-kind goals (and even those rarely,
   // since their goalDist is sparse).
-  const tierWeight = { legendary:5, epic:4, rare:3, uncommon:2, common:1 }
+  const tierWeight = { generational:6, legendary:5, epic:4, rare:3, uncommon:2, common:1 }
   function scoreFor(star, kind) {
     let score = 0
     if (kind === 'shot') {
@@ -468,7 +529,7 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
   const stars2 = t2.stars && t2.stars.length ? t2.stars : (t2.star ? [t2.star] : [])
 
   // Nullifier resolution — pick the opponent's best attacking star.
-  const orderTier = ['legendary','epic','rare','uncommon','common']
+  const orderTier = ['generational','legendary','epic','rare','uncommon','common']
   const bestAttacker = stars => {
     const cand = stars.filter(s => ['FWD','MID'].includes(s.pos))
     if (!cand.length) return null
@@ -490,14 +551,38 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
     if (star) effects.push(`⛓ ${t2.name}'s defender nullifies ${star.name}!`)
   }
 
-  // Stage 1 — match stats.
+  // Stage 1 — match stats and discipline.
   const m1 = computeMatchStats(e1, e2, stars1, stars2, t1Trait, t2Trait)
   const m2 = computeMatchStats(e2, e1, stars2, stars1, t2Trait, t1Trait)
+  const cards1 = computeDiscipline(e1, e2, t1Trait, isKO)
+  const cards2 = computeDiscipline(e2, e1, t2Trait, isKO)
+
+  // A dismissal changes the match before goals are generated. Keep the
+  // effect noticeable but not deterministic: ten men can still win.
+  if (cards1.red) {
+    m1.possessionShare *= 0.91
+    m1.xG = Math.round(m1.xG * 0.78 * 100) / 100
+    m1.shotsOnTarget = Math.min(m1.shotsOnTarget, Math.max(0, Math.round(m1.shotsOnTarget * 0.82)))
+    m2.xG = Math.round(clamp(m2.xG * 1.15, 0.10, 5.20) * 100) / 100
+  }
+  if (cards2.red) {
+    m2.possessionShare *= 0.91
+    m2.xG = Math.round(m2.xG * 0.78 * 100) / 100
+    m2.shotsOnTarget = Math.min(m2.shotsOnTarget, Math.max(0, Math.round(m2.shotsOnTarget * 0.82)))
+    m1.xG = Math.round(clamp(m1.xG * 1.15, 0.10, 5.20) * 100) / 100
+  }
+
   const totalShare = m1.possessionShare + m2.possessionShare
   const possession1 = clamp(Math.round(m1.possessionShare / totalShare * 100), 25, 75)
   const possession2 = 100 - possession1
   const shots1 = m1.shots, shots2 = m2.shots
+  const shotsOnTarget1 = m1.shotsOnTarget, shotsOnTarget2 = m2.shotsOnTarget
+  const xG1 = m1.xG, xG2 = m2.xG
   const corners1 = m1.corners, corners2 = m2.corners
+  const yellowCards1 = cards1.yellow, yellowCards2 = cards2.yellow
+  const redCards1 = cards1.red, redCards2 = cards2.red
+  if (redCards1) effects.push(`🟥 ${t1.name} are reduced to ten men!`)
+  if (redCards2) effects.push(`🟥 ${t2.name} are reduced to ten men!`)
 
   // Stage 2 — convert stats to raw goals.
   const conv1 = statsToGoals(m1, e1, stars1, stars2, possession1, t1Trait, t2Trait)
@@ -523,7 +608,7 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
   let g1 = Math.max(0, Math.round(raw1))
   let g2 = Math.max(0, Math.round(raw2))
 
-  const tierOrder = ['legendary','epic','rare','uncommon','common']
+  const tierOrder = ['generational','legendary','epic','rare','uncommon','common']
   const defenders1 = stars1.filter(s => ['GK','DEF'].includes(s.pos))
     .sort((a,b) => tierOrder.indexOf(a.tier) - tierOrder.indexOf(b.tier))
   const defenders2 = stars2.filter(s => ['GK','DEF'].includes(s.pos))
@@ -764,7 +849,10 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
     t1, t2, g1, g2,
     winner, penalties,
     effects, tranches, timeline, etGoals,
-    shots1, shots2, corners1, corners2, possession1, possession2,
+    shots1:Math.max(shots1,g1), shots2:Math.max(shots2,g2),
+    shotsOnTarget1:Math.max(shotsOnTarget1,g1), shotsOnTarget2:Math.max(shotsOnTarget2,g2), xG1, xG2,
+    corners1, corners2, possession1, possession2,
+    yellowCards1, yellowCards2, redCards1, redCards2,
     starRatings: { team1: starRatingsT1, team2: starRatingsT2 },
     mentalityChanges,
   }
@@ -813,7 +901,7 @@ function calcStarMatchRating({ pos, tier, gf, ga, myShots, oppShots, poss, starG
     if (ga > 0 && oppShots <= 7) r -= 0.4
   }
 
-  r += { legendary:0.5, epic:0.3, rare:0.18, uncommon:0.08, common:0.0 }[tier] || 0
+  r += { generational:0.65, legendary:0.5, epic:0.3, rare:0.18, uncommon:0.08, common:0.0 }[tier] || 0
   r += gaussRand(0.35)
 
   return Math.round(clamp(r, 4.0, 10.0) * 10) / 10

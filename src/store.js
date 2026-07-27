@@ -137,9 +137,16 @@ const INITIAL_STATE = {
   teamGoals: {},
   teamGoalsConceded: {},
   teamShots: {},
+  teamShotsOnTarget: {},
+  teamXG: {},
+  teamYellowCards: {},
+  teamRedCards: {},
   teamPossession: {},
   teamPossessionMatches: {},
   allMatchResults: [],
+  magazineIssues: [],
+  preseasonContenderIds: [],
+  preseasonContenderSeason: 0,
   allTeams: null,
   teamStats: null,
   localLeagueResults: null,
@@ -303,6 +310,12 @@ function migrateSaveData(data) {
   migrateRemovedClub(data)
   if (!Array.isArray(data.transferHistory)) data.transferHistory = []
   if (!Array.isArray(data.financeHistory)) data.financeHistory = []
+  if (!Array.isArray(data.magazineIssues)) data.magazineIssues = []
+  if (!Array.isArray(data.preseasonContenderIds)) data.preseasonContenderIds = []
+  if (typeof data.preseasonContenderSeason !== 'number') data.preseasonContenderSeason = 0
+  for (const key of ['teamShotsOnTarget','teamXG','teamYellowCards','teamRedCards']) {
+    if (!data[key] || typeof data[key] !== 'object') data[key] = {}
+  }
   // Saves created before the historical-era update were already modern
   // Champions League universes. Keep them modern instead of rewinding them,
   // and do not inject fifty historical players into an established career.

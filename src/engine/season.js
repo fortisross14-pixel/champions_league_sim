@@ -1354,6 +1354,10 @@ function resetTournamentState() {
   S.teamGoals = {}
   S.teamGoalsConceded = {}
   S.teamShots = {}
+  S.teamShotsOnTarget = {}
+  S.teamXG = {}
+  S.teamYellowCards = {}
+  S.teamRedCards = {}
   S.teamPossession = {}
   S.teamPossessionMatches = {}
   S.allMatchResults = []
@@ -1553,12 +1557,21 @@ function trackMatchStats(r, phase, gi) {
     g1:r.g1, g2:r.g2,
     phase, gi,
     shots1:r.shots1, shots2:r.shots2,
+    shotsOnTarget1:r.shotsOnTarget1, shotsOnTarget2:r.shotsOnTarget2,
+    xG1:r.xG1, xG2:r.xG2,
     corners1:r.corners1, corners2:r.corners2,
-    possession1:r.possession1,
+    possession1:r.possession1, possession2:r.possession2,
+    yellowCards1:r.yellowCards1, yellowCards2:r.yellowCards2,
+    redCards1:r.redCards1, redCards2:r.redCards2,
+    starRatings:r.starRatings,
   })
   S.teamGoals = S.teamGoals || {}
   S.teamGoalsConceded = S.teamGoalsConceded || {}
   S.teamShots = S.teamShots || {}
+  S.teamShotsOnTarget = S.teamShotsOnTarget || {}
+  S.teamXG = S.teamXG || {}
+  S.teamYellowCards = S.teamYellowCards || {}
+  S.teamRedCards = S.teamRedCards || {}
   S.teamPossession = S.teamPossession || {}     // sum of possession %
   S.teamPossessionMatches = S.teamPossessionMatches || {}  // count of matches
   S.teamGoals[r.t1.id] = (S.teamGoals[r.t1.id]||0) + r.g1
@@ -1567,6 +1580,14 @@ function trackMatchStats(r, phase, gi) {
   S.teamGoalsConceded[r.t2.id] = (S.teamGoalsConceded[r.t2.id]||0) + r.g1
   S.teamShots[r.t1.id] = (S.teamShots[r.t1.id]||0) + (r.shots1||0)
   S.teamShots[r.t2.id] = (S.teamShots[r.t2.id]||0) + (r.shots2||0)
+  S.teamShotsOnTarget[r.t1.id] = (S.teamShotsOnTarget[r.t1.id]||0) + (r.shotsOnTarget1||0)
+  S.teamShotsOnTarget[r.t2.id] = (S.teamShotsOnTarget[r.t2.id]||0) + (r.shotsOnTarget2||0)
+  S.teamXG[r.t1.id] = Math.round(((S.teamXG[r.t1.id]||0) + (r.xG1||0)) * 100) / 100
+  S.teamXG[r.t2.id] = Math.round(((S.teamXG[r.t2.id]||0) + (r.xG2||0)) * 100) / 100
+  S.teamYellowCards[r.t1.id] = (S.teamYellowCards[r.t1.id]||0) + (r.yellowCards1||0)
+  S.teamYellowCards[r.t2.id] = (S.teamYellowCards[r.t2.id]||0) + (r.yellowCards2||0)
+  S.teamRedCards[r.t1.id] = (S.teamRedCards[r.t1.id]||0) + (r.redCards1||0)
+  S.teamRedCards[r.t2.id] = (S.teamRedCards[r.t2.id]||0) + (r.redCards2||0)
   S.teamPossession[r.t1.id] = (S.teamPossession[r.t1.id]||0) + (r.possession1||50)
   S.teamPossession[r.t2.id] = (S.teamPossession[r.t2.id]||0) + (100 - (r.possession1||50))
   S.teamPossessionMatches[r.t1.id] = (S.teamPossessionMatches[r.t1.id]||0) + 1
@@ -2624,6 +2645,10 @@ export function startNewSeason() {
   S.teamGoals = {}
   S.teamGoalsConceded = {}
   S.teamShots = {}
+  S.teamShotsOnTarget = {}
+  S.teamXG = {}
+  S.teamYellowCards = {}
+  S.teamRedCards = {}
   S.teamPossession = {}
   S.teamPossessionMatches = {}
   S.allMatchResults = []

@@ -263,6 +263,7 @@ window.handleMain = async function () {
   } else if (p === 'qualifying') {
     if (S.era === 'european_cup') {
       buildClassicBracket()
+      lockPreseasonContenders()
       S.phase = 'knockout'
       await snapshotPreTournament()
       await autoSave()
@@ -272,6 +273,7 @@ window.handleMain = async function () {
       switchTab('magazine')
     } else {
       drawGroups()
+      lockPreseasonContenders()
       S.phase = 'groups'
       // RESTART POINT: capture the world right after the draw, before
       // any match has been played. "Restart Tournament" rolls back
@@ -326,11 +328,18 @@ function playNextGroupMatch() {
   // Show the preview first; only play the match when the user hits Start.
   showMatchPreview(match.t1, match.t2, 'Group Stage', () => {
     const result = playGroupMatch(match)
+    const group = S.groups?.[match.gi]
+    const issueMeta = { key:`s${S.season}:group:${match.gi}`, title:`Group ${group?.id || match.gi + 1}`, stage:'group' }
+    recordMagazineMatch(result, issueMeta)
+    const groupComplete = !S.groupMatches.some(m => m.gi === match.gi && !m.played)
+    if (groupComplete) finalizeGroupMagazine(match.gi)
+    autoSave()
     showMatchPopup(result, 'Group Stage', () => {
       renderGroups()
       updatePhaseUI()
       const left = S.groupMatches.filter(m => !m.played).length
       $('btn-main').textContent = left > 0 ? `▶ Play Next (${left} left)` : '▶ Complete Group Stage'
+      if (groupComplete) toast(`Europe Today published the Group ${group?.id || match.gi + 1} report.`)
     })
   })
 }
@@ -341,6 +350,7 @@ function playNextKnockoutMatch() {
   if (!round) return
   const unplayed = round.matches.filter(m => !m.played)
   if (!unplayed.length) {
+    finalizeKnockoutMagazine(round)
     advanceKnockout()
     autoSave()
     if (S.phase === 'done') {
@@ -357,11 +367,17 @@ function playNextKnockoutMatch() {
   const match = unplayed[0]
   showMatchPreview(match.t1, match.t2, round.name, () => {
     const result = playKnockoutMatch(match)
+    const slug = String(round.name || 'knockout').toLowerCase().replace(/[^a-z0-9]+/g,'-')
+    recordMagazineMatch(result, { key:`s${S.season}:ko:${slug}`, title:round.name, stage:'knockout' })
+    const roundComplete = !round.matches.some(m => !m.played)
+    if (roundComplete) finalizeKnockoutMagazine(round)
+    autoSave()
     showMatchPopup(result, round.name, () => {
       renderBracket()
       updatePhaseUI()
       const left = round.matches.filter(m => !m.played).length
       $('btn-main').textContent = left > 0 ? `▶ Play Next (${left} left)` : '▶ Advance Round'
+      if (roundComplete) toast(`Europe Today published the ${round.name} report.`)
     })
   })
 }
@@ -793,12 +809,20 @@ function renderFinalSummary(r) {
   return `
     <div class="playback-stats-grid">
       <div class="stat-cell stat-team-l">${r.t1.name}</div>
-      <div class="stat-cell stat-label">SHOTS</div>
+      <div class="stat-cell stat-label">MATCH STATS</div>
       <div class="stat-cell stat-team-r">${r.t2.name}</div>
 
       <div class="stat-cell stat-num">${r.shots1}</div>
-      <div class="stat-cell"></div>
+      <div class="stat-cell stat-label">SHOTS</div>
       <div class="stat-cell stat-num">${r.shots2}</div>
+
+      <div class="stat-cell stat-num">${r.shotsOnTarget1 ?? '—'}</div>
+      <div class="stat-cell stat-label">ON TARGET</div>
+      <div class="stat-cell stat-num">${r.shotsOnTarget2 ?? '—'}</div>
+
+      <div class="stat-cell stat-num stat-xg">${r.xG1 != null ? r.xG1.toFixed(2) : '—'}</div>
+      <div class="stat-cell stat-label">xG</div>
+      <div class="stat-cell stat-num stat-xg">${r.xG2 != null ? r.xG2.toFixed(2) : '—'}</div>
 
       <div class="stat-cell stat-num">${r.corners1}</div>
       <div class="stat-cell stat-label">CORNERS</div>
@@ -807,6 +831,14 @@ function renderFinalSummary(r) {
       <div class="stat-cell stat-num">${r.possession1}%</div>
       <div class="stat-cell stat-label">POSSESSION</div>
       <div class="stat-cell stat-num">${r.possession2}%</div>
+
+      <div class="stat-cell stat-num card-stat"><span class="yellow-card-dot"></span>${r.yellowCards1 ?? 0}</div>
+      <div class="stat-cell stat-label">YELLOW CARDS</div>
+      <div class="stat-cell stat-num card-stat">${r.yellowCards2 ?? 0}<span class="yellow-card-dot"></span></div>
+
+      <div class="stat-cell stat-num card-stat"><span class="red-card-dot"></span>${r.redCards1 ?? 0}</div>
+      <div class="stat-cell stat-label">RED CARDS</div>
+      <div class="stat-cell stat-num card-stat">${r.redCards2 ?? 0}<span class="red-card-dot"></span></div>
     </div>
 
     <div class="playback-pair">
@@ -895,10 +927,280 @@ function transferHeadline(m) {
   return `${m.to} land ${m.name} in the deal of the summer.`
 }
 
+function lockPreseasonContenders() {
+  if (!(S.teams || []).length) return
+  const ids = preseasonContenders().map(x => x.team.id)
+  S.preseasonContenderIds = ids
+  S.preseasonContenderSeason = S.season || 1
+}
+
+function contenderIdsForSeason() {
+  if (S.preseasonContenderSeason !== (S.season || 1) || !(S.preseasonContenderIds || []).length) {
+    lockPreseasonContenders()
+  }
+  return new Set(S.preseasonContenderIds || [])
+}
+
+function magazineIssue(meta) {
+  S.magazineIssues = Array.isArray(S.magazineIssues) ? S.magazineIssues : []
+  let issue = S.magazineIssues.find(x => x.key === meta.key)
+  if (!issue) {
+    issue = {
+      key: meta.key,
+      season: S.season || 1,
+      year: gameYear(),
+      title: meta.title,
+      stage: meta.stage,
+      complete: false,
+      matches: 0,
+      stories: [],
+      updatedAt: Date.now(),
+    }
+    S.magazineIssues.push(issue)
+    if (S.magazineIssues.length > 180) {
+      S.magazineIssues.sort((a,b) => (a.year||0)-(b.year||0) || (a.updatedAt||0)-(b.updatedAt||0))
+      S.magazineIssues.splice(0, S.magazineIssues.length - 180)
+    }
+  }
+  return issue
+}
+
+function addMagazineStory(issue, story) {
+  if (!issue || !story?.id) return
+  issue.stories = Array.isArray(issue.stories) ? issue.stories : []
+  if (issue.stories.some(x => x.id === story.id)) return
+  issue.stories.push(story)
+  issue.stories.sort((a,b) => (b.priority || 0) - (a.priority || 0))
+  issue.stories = issue.stories.slice(0, 12)
+  issue.updatedAt = Date.now()
+}
+
+function starByResultRow(team, row) {
+  return (team?.stars || []).find(s => s.id === row?.id) || null
+}
+
+function isHeadlinePlayer(star) {
+  return !!star && (premiumRank(star.tier) >= premiumRank('rare') || star.historic)
+}
+
+function matchEditorialStories(r, meta) {
+  const out = []
+  const matchId = `${meta.key}:${r.t1.id}:${r.t2.id}:${(S.allMatchResults || []).length}`
+  const contenders = contenderIdsForSeason()
+  const sides = [
+    { team:r.t1, opp:r.t2, rows:r.starRatings?.team1 || [], gf:r.g1, ga:r.g2, xg:r.xG1, oppXg:r.xG2, red:r.redCards1 || 0 },
+    { team:r.t2, opp:r.t1, rows:r.starRatings?.team2 || [], gf:r.g2, ga:r.g1, xg:r.xG2, oppXg:r.xG1, red:r.redCards2 || 0 },
+  ]
+
+  sides.forEach(side => {
+    side.rows.forEach(row => {
+      const star = starByResultRow(side.team, row)
+      if (!isHeadlinePlayer(star)) return
+      if ((row.goals || 0) >= 3) {
+        out.push({
+          id:`${matchId}:hat:${row.id}`, priority:105, kicker:'STAR PERFORMANCE', icon:'⚽', tone:'match',
+          title:`${row.name} hits a hat-trick for ${side.team.name}`,
+          body:`${row.name} scored ${row.goals} times against ${side.opp.name}${row.rating >= 9.95 ? ' and finished with a perfect 10 rating' : ''}. ${side.team.name} produced ${Number(side.xg || 0).toFixed(2)} xG in a ${side.gf}–${side.ga} statement.`,
+          playerId:row.id, teamId:side.team.id,
+        })
+        return
+      }
+      if ((row.rating || 0) >= 9.95) {
+        let reason = `${row.goals || 0} goal${row.goals === 1 ? '' : 's'} in a decisive attacking display`
+        if (['GK','DEF'].includes(row.pos) && side.ga === 0) {
+          reason = `a clean sheet against ${side.opp.name}${row.saves ? ` and ${row.saves} decisive intervention${row.saves===1?'':'s'}` : ''}`
+        } else if (row.pos === 'MID' && side.gf > side.ga) {
+          reason = `controlling a victory over ${side.opp.name}`
+        }
+        out.push({
+          id:`${matchId}:ten:${row.id}`, priority:98, kicker:'PERFECT TEN', icon:'⭐', tone:'player',
+          title:`${row.name} earns a 10.0 for ${side.team.name}`,
+          body:`The ${row.pos} received the highest possible rating thanks to ${reason}. It is one of the performances of the tournament so far.`,
+          playerId:row.id, teamId:side.team.id,
+        })
+      } else if ((row.rating || 0) >= 9.3 && premiumRank(star.tier) >= premiumRank('epic')) {
+        out.push({
+          id:`${matchId}:elite:${row.id}`, priority:72, kicker:'PLAYER OF THE NIGHT', icon:'✨', tone:'player',
+          title:`${row.name} takes control for ${side.team.name}`,
+          body:`A ${row.rating.toFixed(1)} performance against ${side.opp.name}${row.goals ? ` included ${row.goals} goal${row.goals===1?'':'s'}` : ''}. The ${tierLabel(star.tier).toLowerCase()} star is already shaping this campaign.`,
+          playerId:row.id, teamId:side.team.id,
+        })
+      }
+    })
+  })
+
+  const winner = r.g1 > r.g2 ? r.t1 : r.g2 > r.g1 ? r.t2 : null
+  const loser = winner === r.t1 ? r.t2 : winner === r.t2 ? r.t1 : null
+  if (winner && loser) {
+    const winnerOvr = effectiveTeamOverall(winner)
+    const loserOvr = effectiveTeamOverall(loser)
+    const margin = Math.abs(r.g1 - r.g2)
+    if ((contenders.has(loser.id) && winnerOvr + 3 < loserOvr) || winnerOvr + 7 <= loserOvr) {
+      out.push({
+        id:`${matchId}:upset`, priority:84, kicker:'SHOCK RESULT', icon:'🚨', tone:'match',
+        title:`${winner.name} stun ${loser.name}`,
+        body:`The underdogs overturned a ${Math.max(1, loserOvr-winnerOvr)}-point team-rating gap to win ${r.g1}–${r.g2}. One of the tournament's established powers has been warned.`,
+        teamId:winner.id,
+      })
+    } else if (contenders.has(winner.id) && margin >= 4) {
+      out.push({
+        id:`${matchId}:statement`, priority:70, kicker:'CONTENDER WATCH', icon:'🔥', tone:'match',
+        title:`${winner.name} deliver a statement victory`,
+        body:`One of the preseason favorites won by ${margin} goals, combining ${winner === r.t1 ? r.shots1 : r.shots2} shots with ${Number(winner === r.t1 ? r.xG1 : r.xG2).toFixed(2)} xG.`,
+        teamId:winner.id,
+      })
+    }
+  }
+
+  sides.forEach(side => {
+    if (!side.red || side.gf < side.ga) return
+    if (!contenders.has(side.team.id) && !(side.team.stars || []).some(isHeadlinePlayer)) return
+    out.push({
+      id:`${matchId}:ten-men:${side.team.id}`, priority:76, kicker:'TEN-MAN DRAMA', icon:'🟥', tone:'match',
+      title:`Ten-man ${side.team.name} survive ${side.opp.name}`,
+      body:`A red card changed the shape of the match, but ${side.team.name} still escaped with ${side.gf > side.ga ? 'a victory' : 'a draw'}. Their xG finished at ${Number(side.xg || 0).toFixed(2)} against ${Number(side.oppXg || 0).toFixed(2)}.`,
+      teamId:side.team.id,
+    })
+  })
+
+  return out.sort((a,b) => (b.priority || 0) - (a.priority || 0)).slice(0, 5)
+}
+
+function recordMagazineMatch(r, meta) {
+  if (!r) return
+  const issue = magazineIssue(meta)
+  issue.matches = (issue.matches || 0) + 1
+  matchEditorialStories(r, meta).forEach(story => addMagazineStory(issue, story))
+  issue.updatedAt = Date.now()
+  // The next time the user opens the Magazine, lead with the new edition
+  // rather than leaving them parked on the pre-season guide forever.
+  magazineSubTab = 'front'
+}
+
+function groupStandings(gi) {
+  const group = S.groups?.[gi]
+  if (!group) return []
+  return [...group.teams].sort((a,b) =>
+    (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0) || effectiveTeamOverall(b)-effectiveTeamOverall(a)
+  )
+}
+
+function finalizeGroupMagazine(gi) {
+  const group = S.groups?.[gi]
+  if (!group) return
+  const key = `s${S.season}:group:${gi}`
+  const issue = magazineIssue({ key, title:`Group ${group.id}`, stage:'group' })
+  if (issue.complete) return
+  const table = groupStandings(gi)
+  const contenders = contenderIdsForSeason()
+  table.slice(2).forEach(team => {
+    if (!contenders.has(team.id)) return
+    addMagazineStory(issue, {
+      id:`${key}:eliminated:${team.id}`, priority:112, kicker:'FAVORITE FALLS', icon:'💥', tone:'elimination',
+      title:`${team.name}, a top contender, are eliminated early`,
+      body:`The preseason guide placed ${team.name} among the four leading candidates, but they finish Group ${group.id} in ${table.indexOf(team)+1}${table.indexOf(team)===2?'rd':'th'} place. Their campaign ends before the knockout rounds.`,
+      teamId:team.id,
+    })
+  })
+  const winner = table[0]
+  if (winner && !issue.stories.length) {
+    addMagazineStory(issue, {
+      id:`${key}:winner`, priority:45, kicker:'GROUP REPORT', icon:'📋', tone:'round',
+      title:`${winner.name} take command of Group ${group.id}`,
+      body:`${winner.name} finish top with ${winner.pts || 0} points and a ${(winner.gd||0) >= 0 ? '+' : ''}${winner.gd || 0} goal difference. The group produced no larger individual headline, but the hierarchy is now clear.`,
+      teamId:winner.id,
+    })
+  }
+  issue.complete = true
+  issue.updatedAt = Date.now()
+}
+
+function finalizeKnockoutMagazine(round) {
+  if (!round) return
+  const slug = String(round.name || 'knockout').toLowerCase().replace(/[^a-z0-9]+/g,'-')
+  const key = `s${S.season}:ko:${slug}`
+  const issue = magazineIssue({ key, title:round.name || 'Knockout', stage:'knockout' })
+  if (issue.complete) return
+  const contenders = contenderIdsForSeason()
+  const lastChampionId = [...(S.history || [])].reverse()[0]?.champion
+  const losers = round.matches.map(m => {
+    const winner = m.result?.winner
+    if (!winner) return null
+    return winner.id === m.t1.id ? m.t2 : m.t1
+  }).filter(Boolean)
+  losers.forEach(team => {
+    const isContender = contenders.has(team.id)
+    const isHolder = team.id === lastChampionId
+    if (!isContender && !isHolder) return
+    const early = ['Round of 16','Quarter-finals'].includes(round.name)
+    addMagazineStory(issue, {
+      id:`${key}:eliminated:${team.id}`, priority:isHolder ? 116 : 110, kicker:isHolder?'CHAMPIONS DETHRONED':'CONTENDER OUT', icon:isHolder?'👑':'💥', tone:'elimination',
+      title:isHolder ? `${team.name}'s title defence is over` : `${team.name}, one of the top contenders, are out`,
+      body:`${team.name} are eliminated in the ${round.name}${early ? ', far earlier than expected' : ''}. A team introduced among the season's central characters will not reach the next chapter.`,
+      teamId:team.id,
+    })
+  })
+  if (round.name === 'Final') {
+    const finalMatch = round.matches.find(m => m.result?.winner)
+    if (finalMatch) {
+      const r = finalMatch.result
+      const champion = r.winner
+      const finalist = champion.id === r.t1.id ? r.t2 : r.t1
+      const championGoals = champion.id === r.t1.id ? r.g1 : r.g2
+      const finalistGoals = champion.id === r.t1.id ? r.g2 : r.g1
+      addMagazineStory(issue, {
+        id:`${key}:champion:${champion.id}`, priority:125, kicker:'CHAMPIONS OF EUROPE', icon:'🏆', tone:'lead',
+        title:`${champion.name} conquer Europe`,
+        body:`${champion.name} defeat ${finalist.name} ${championGoals}–${finalistGoals} in the final and close ${gameYear()} at the summit of European football.`,
+        teamId:champion.id,
+      })
+    }
+  }
+  if (!issue.stories.length) {
+    const best = [...round.matches].filter(m => m.result).sort((a,b) => {
+      const ar=Math.abs(a.result.g1-a.result.g2)+(a.result.g1+a.result.g2)*0.15
+      const br=Math.abs(b.result.g1-b.result.g2)+(b.result.g1+b.result.g2)*0.15
+      return br-ar
+    })[0]
+    if (best) {
+      const r = best.result
+      const winner = r.winner || (r.g1 >= r.g2 ? r.t1 : r.t2)
+      const opponent = winner.id === r.t1.id ? r.t2 : r.t1
+      const winnerGoals = winner.id === r.t1.id ? r.g1 : r.g2
+      const opponentGoals = winner.id === r.t1.id ? r.g2 : r.g1
+      addMagazineStory(issue, {
+        id:`${key}:summary`, priority:44, kicker:`${String(round.name).toUpperCase()} REPORT`, icon:'📰', tone:'round',
+        title:`${winner.name} provide the defining result of the round`,
+        body:`The ${winnerGoals}–${opponentGoals} result against ${opponent.name} was the clearest headline from a round otherwise decided without a major favorite falling.`,
+        teamId:winner.id,
+      })
+    }
+  }
+  issue.complete = true
+  issue.updatedAt = Date.now()
+}
+
+function renderRoundReports() {
+  const issues = [...(S.magazineIssues || [])].sort((a,b) => (b.year||0)-(a.year||0) || (b.updatedAt||0)-(a.updatedAt||0)).slice(0, 18)
+  if (!issues.length) return `<div class="guide-empty"><div>ROUND REPORTS</div><p>The newsroom publishes its first tournament edition after the opening matches.</p></div>`
+  return `<section class="round-report-list">${issues.map(issue => `
+    <article class="round-report-issue ${issue.complete?'complete':'live'}">
+      <header><div><span>${issue.year} · ${issue.stage==='group'?'GROUP DESK':'KNOCKOUT DESK'}</span><h2>${issue.title}</h2></div><b>${issue.complete?'FINAL EDITION':'LIVE EDITION'}</b></header>
+      <div class="round-report-stories">${(issue.stories || []).length ? issue.stories.map(story => `
+        <div class="round-report-story mag-${story.tone || 'match'}"><div class="mag-kicker">${story.icon || '📰'} ${story.kicker || 'ROUND NEWS'}</div><h3>${story.title}</h3><p>${story.body}</p></div>`).join('') : `<div class="empty">No major headline yet. The edition remains open as matches are played.</div>`}</div>
+    </article>`).join('')}</section>`
+}
+
 function buildMagazineStories() {
   const stories = []
+  const latestIssue = [...(S.magazineIssues || [])]
+    .filter(x => x.season === (S.season || 1) && (x.stories || []).length)
+    .sort((a,b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]
+  if (latestIssue) {
+    latestIssue.stories.forEach(story => stories.push({ ...story, kicker:`${latestIssue.title.toUpperCase()} · ${story.kicker || 'ROUND NEWS'}` }))
+  }
   const lead = marketHeadlineMove()
-  if (lead) stories.push({ kicker:'TRANSFER EXCLUSIVE', icon:'🚨', title:transferHeadline(lead), body: lead.phase === 'transfer'
+  if (!latestIssue && lead) stories.push({ kicker:'TRANSFER EXCLUSIVE', icon:'🚨', title:transferHeadline(lead), body: lead.phase === 'transfer'
     ? `${lead.from} receive ${fmtMoney(lead.saleValue||lead.signFee||0)}, while ${lead.to} add a ${tierLabel(lead.tier).toLowerCase()} ${lead.pos || 'star'} on a ${lead.contractYears||'?'}-year deal. The balance of power may have shifted before a ball is kicked.`
     : `${lead.name} becomes one of the defining names of ${gameYear()}'s offseason.`, tone:'lead' })
 
@@ -918,11 +1220,13 @@ function buildMagazineStories() {
     stories.push({kicker:r.league?.name?.toUpperCase()||'DOMESTIC LEAGUE',icon:'🏆',title:`${champ.team.name} rule ${r.league?.name||'their league'}`,body: gap >= 8 ? `A dominant campaign ended with a ${gap}-point performance gap over ${runner.team.name}.` : runner ? `${runner.team.name} pushed them to the finish, but ${champ.team.name} held their nerve.` : 'A championship season earns them a place among Europe’s elite.',tone:'league'})
   })
 
-  const recent=[...(S.allMatchResults||[])].reverse().slice(0,8)
-  recent.forEach(r=>{
-    const margin=Math.abs(r.g1-r.g2), total=r.g1+r.g2
-    if(total>=6 || margin>=4) stories.push({kicker:'EUROPEAN NIGHT',icon:'⚽',title:`${r.t1name} ${r.g1}–${r.g2} ${r.t2name}`,body: total>=6 ? 'A chaotic classic delivered goals, momentum swings and a result that will live in this season’s memory.' : 'One side delivered a statement performance that the rest of Europe cannot ignore.',tone:'match'})
-  })
+  if (!latestIssue) {
+    const recent=[...(S.allMatchResults||[])].reverse().slice(0,8)
+    recent.forEach(r=>{
+      const margin=Math.abs(r.g1-r.g2), total=r.g1+r.g2
+      if(total>=6 || margin>=4) stories.push({kicker:'EUROPEAN NIGHT',icon:'⚽',title:`${r.t1name} ${r.g1}–${r.g2} ${r.t2name}`,body: total>=6 ? 'A chaotic classic delivered goals, momentum swings and a result that will live in this season’s memory.' : 'One side delivered a statement performance that the rest of Europe cannot ignore.',tone:'match'})
+    })
+  }
 
   const hist=(S.history||[]).slice(-1)[0]
   if(hist) stories.push({kicker:'FROM THE ARCHIVE',icon:'📚',title:`${hist.championName} remain the team everyone is chasing`,body:`Last season’s champions return as the reference point after defeating ${hist.runnerUpName||'their final opponent'} in the decisive match.`,tone:'archive'})
@@ -1080,16 +1384,20 @@ function renderMagazine() {
   const stories=buildMagazineStories()
   const lead=stories[0]
   const guideReady = (S.teams || []).length && !['idle','stats','market','qualifying'].includes(S.phase)
+  const issueCount = (S.magazineIssues || []).filter(x => x.season === (S.season || 1)).length
+  const latestIssue = [...(S.magazineIssues || [])].filter(x => x.season === (S.season || 1)).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0))[0]
   el.innerHTML=`
     <div class="magazine-masthead">
       <div><div class="magazine-name">EUROPE TODAY</div><div class="magazine-date">${gameYear()} · ${S.era==='european_cup'?'THE EUROPEAN CUP WORLD':'THE CHAMPIONS LEAGUE WORLD'}</div></div>
-      <div class="magazine-edition">DAILY<br>EDITION</div>
+      <div class="magazine-edition">${latestIssue ? `${latestIssue.title.toUpperCase()}<br>EDITION` : 'DAILY<br>EDITION'}</div>
     </div>
     <div class="sub-tab-row magazine-tab-row">
       <button class="sub-tab ${magazineSubTab==='front'?'active':''}" onclick="setMagazineSubTab('front')">📰 Front Page</button>
+      <button class="sub-tab ${magazineSubTab==='reports'?'active':''}" onclick="setMagazineSubTab('reports')">⚽ Round Reports${issueCount?` <span class="sub-tab-count">${issueCount}</span>`:''}</button>
       <button class="sub-tab ${magazineSubTab==='guide'?'active':''}" onclick="setMagazineSubTab('guide')">📖 Pre-season Guide${guideReady?' <span class="sub-tab-count">NEW</span>':''}</button>
     </div>
-    ${magazineSubTab === 'guide' ? renderPreseasonGuide() : `
+    ${magazineSubTab === 'guide' ? renderPreseasonGuide() : magazineSubTab === 'reports' ? renderRoundReports() : `
+      ${latestIssue ? `<div class="latest-edition-strip"><span>${latestIssue.complete?'ROUND COMPLETE':'LIVE EDITION'}</span><strong>${latestIssue.title}</strong><button onclick="setMagazineSubTab('reports')">Read full report →</button></div>` : ''}
       ${lead ? `<article class="mag-lead"><div class="mag-kicker">${lead.icon} ${lead.kicker}</div><h1>${lead.title}</h1><p>${lead.body}</p></article>` : `<div class="empty">Begin the season to create the first edition.</div>`}
       <div class="mag-story-grid">${stories.slice(1).map(x=>`<article class="mag-story mag-${x.tone}"><div class="mag-kicker">${x.icon} ${x.kicker}</div><h2>${x.title}</h2><p>${x.body}</p></article>`).join('')}</div>`}
   `
@@ -3005,6 +3313,14 @@ function renderSeasonCL() {
   const teamShotsList = Object.entries(S.teamShots || {})
     .filter(([id]) => tname(id))
     .sort((a,b) => b[1] - a[1]).slice(0, 6)
+  const teamXGList = Object.entries(S.teamXG || {})
+    .filter(([id]) => tname(id))
+    .sort((a,b) => b[1] - a[1]).slice(0, 6)
+  const teamDisciplineList = (S.teams || []).map(t => ({
+      id:t.id, yellow:S.teamYellowCards?.[t.id] || 0, red:S.teamRedCards?.[t.id] || 0,
+    }))
+    .filter(x => x.yellow || x.red)
+    .sort((a,b) => b.red-a.red || b.yellow-a.yellow).slice(0, 6)
   const teamPossList = Object.entries(S.teamPossession || {})
     .filter(([id]) => tname(id))
     .map(([id, sum]) => [id, sum / (S.teamPossessionMatches?.[id] || 1)])
@@ -3070,6 +3386,28 @@ function renderSeasonCL() {
         <td style="color:var(--txt3);width:24px">${i+1}</td>
         <td style="font-weight:600">${flag(tcc(id))} ${tname(id)?.name}</td>
         <td class="num" style="color:var(--blue2);font-family:var(--font-head);font-weight:700">${s}</td>
+      </tr>`).join('')}
+    </tbody></table>
+  </div>`
+
+  html += `<div class="card cl-stat-card">
+    <div class="cl-stat-title">📈 Highest xG</div>
+    <table class="data-table compact"><tbody>
+      ${teamXGList.map(([id, xg], i) => `<tr>
+        <td style="color:var(--txt3);width:24px">${i+1}</td>
+        <td style="font-weight:600">${flag(tcc(id))} ${tname(id)?.name}</td>
+        <td class="num" style="color:var(--cyan);font-family:var(--font-head);font-weight:700">${Number(xg).toFixed(2)}</td>
+      </tr>`).join('')}
+    </tbody></table>
+  </div>`
+
+  html += `<div class="card cl-stat-card">
+    <div class="cl-stat-title">🟨 Discipline</div>
+    <table class="data-table compact"><tbody>
+      ${teamDisciplineList.map((row, i) => `<tr>
+        <td style="color:var(--txt3);width:24px">${i+1}</td>
+        <td style="font-weight:600">${flag(tcc(row.id))} ${tname(row.id)?.name}</td>
+        <td class="num"><span style="color:#ffd43b">${row.yellow}Y</span> · <span style="color:#ef4444">${row.red}R</span></td>
       </tr>`).join('')}
     </tbody></table>
   </div>`
