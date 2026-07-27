@@ -35,7 +35,7 @@ export const LEAGUES = [
 //   contexts). Independent from money.
 
 export const SPAIN = [
-  { id:'bar',  name:'FC Barcelona',    league:'ESP', cc:'es', money:16, hist:190, colors:['#A50044','#004D98'] },
+  { id:'dep',  name:'Deportivo La Coruña', league:'ESP', cc:'es', money:8, hist:45, colors:['#0050A4','#FFFFFF'] },
   { id:'rm',   name:'Real Madrid',     league:'ESP', cc:'es', money:16, hist:200, colors:['#FFFFFF','#FEBE10'] },
   { id:'atm',  name:'Atlético Madrid', league:'ESP', cc:'es', money:12, hist:80 , colors:['#CB3524','#FFFFFF'] },
   { id:'sev',  name:'Sevilla',         league:'ESP', cc:'es', money:8,  hist:40 , colors:['#FFFFFF','#CC0000'] },

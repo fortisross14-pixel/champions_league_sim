@@ -27,21 +27,49 @@ export const tierColor = t => ({generational:'#e91e63',legendary:'#ff9800',epic:
 
 export const currentCalendarYear = () => Number(S.year) || (1955 + (S.season || 1))
 
-// Rarity distribution: 0.5% generational, 5% legendary (was 2%),
-// Tier probabilities for a fresh-spawned star. Tuned so a world of
-// ~80 teams gets 1-2 Generationals, 3-4 Legendaries, 8-10 Epics,
-// 8-10 Rares, ~25 Uncommons, and the remainder Common.
-//   Generational 2%, Legendary 4%, Epic 12%, Rare 12%,
-//   Uncommon 30%, Common 40%.
-// Generational has a hard cap of 2 in the world — see genStar.
+// World roster targets. The simulator keeps roughly 200 contracted
+// stars across 82 clubs plus 20-30 free agents. New players are generated
+// against the current rarity deficits rather than by an isolated random roll,
+// so a 20-year universe remains close to the intended football pyramid.
+export const WORLD_STAR_TARGET = 225
+export const WORLD_STAR_MIN = 220
+export const WORLD_STAR_MAX = 230
+export const CLUB_STAR_TARGET = 200
+export const CLUB_STAR_MIN = 2
+export const CLUB_STAR_MAX = 3
+export const FREE_AGENT_TARGET = 25
+export const FREE_AGENT_MIN = 20
+export const FREE_AGENT_MAX = 30
+
+export const STAR_TIER_TARGETS = {
+  generational: 3,
+  legendary: 10,
+  epic: 20,
+  rare: 40,
+  uncommon: 64,
+  common: 88,
+}
+
+const STAR_TIER_HARD_MAX = {
+  generational: 3,
+  legendary: 13,
+  epic: 22,
+  rare: 44,
+  uncommon: 78,
+  common: 105,
+}
+
 function rollTier() {
-  const r = Math.random()
-  if (r < 0.02) return 'generational'
-  if (r < 0.06) return 'legendary'
-  if (r < 0.18) return 'epic'
-  if (r < 0.30) return 'rare'
-  if (r < 0.60) return 'uncommon'
-  return 'common'
+  const tiers = ['generational','legendary','epic','rare','uncommon','common']
+  const counts = Object.fromEntries(tiers.map(t => [t, countTierInWorld(t)]))
+  const candidates = tiers.filter(t => counts[t] < STAR_TIER_HARD_MAX[t])
+  if (!candidates.length) return 'common'
+  candidates.sort((a,b) => {
+    const deficitA = (STAR_TIER_TARGETS[a] - counts[a]) / Math.max(1, STAR_TIER_TARGETS[a])
+    const deficitB = (STAR_TIER_TARGETS[b] - counts[b]) / Math.max(1, STAR_TIER_TARGETS[b])
+    return (deficitB + Math.random()*0.08) - (deficitA + Math.random()*0.08)
+  })
+  return candidates[0]
 }
 
 // Count active premium stars across all teams + free agency. Named
@@ -109,12 +137,14 @@ export const ECON = {
   investMax: 0.75,
 }
 
-// Generational cap: world maintains 1-3 Generational stars at a
-// time. Hard cap of 3 enforced in genStar; soft floor of 1 enforced
-// by forced-spawn at end of rookie phase in runMarket.
-export const GENERATIONAL_CAP_MAX = 2
-export const GENERATIONAL_CAP_MIN = 1
-export const LEGENDARY_CAP_MAX = 8
+// Premium guardrails. Named historical players count against these
+// same limits. Generic stars stop spawning above the preferred targets;
+// historic debuts may replace generated premium stars but never push the
+// active world beyond three Generationals or thirteen Legends.
+export const GENERATIONAL_CAP_MAX = 3
+export const GENERATIONAL_CAP_MIN = 2
+export const LEGENDARY_CAP_MAX = 13
+export const LEGENDARY_CAP_MIN = 8
 
 // Happiness thresholds for each tier (out of 100). A player's
 // happiness must reach this value for them to want to stay with
@@ -659,6 +689,162 @@ export function genStar(team, forceTier = null) {
   }
   star.contract = rollContract(currentSeason, star, team, 75)
   return star
+}
+
+function contractedStarCount() {
+  return (S.allTeams || []).reduce((sum, team) => sum + (team.stars || []).length, 0)
+}
+function worldStarCount() {
+  return contractedStarCount() + (S.freeAgents?.stars || []).length
+}
+function tierRankValue(tier) {
+  return ({ common:1, uncommon:2, rare:3, epic:4, legendary:5, generational:6 })[tier] || 0
+}
+function prepareOpeningPlayer(star, team) {
+  const startedAgo = rand(0, Math.max(0, (star.lifespan || 10) - 2))
+  star.season = 1 - startedAgo
+  star.debutAge = 18
+  const total = star.contract?.yearsTotal || rand(3, 6)
+  star.contract = rollContract(1 - rand(0, Math.max(0, total - 1)), star, team, 70, total)
+  star.contract.yearsLeft = rand(1, total)
+  star.careerMult = computeCareerMult(star, S.season || 1)
+}
+function createProceduralFreeAgent(currentSeason, opening = false) {
+  const origin = pick(S.allTeams || [])
+  if (!origin) return null
+  const star = genStar(origin)
+  if (opening) prepareOpeningPlayer(star, origin)
+  star.teamId = null
+  star.teamName = null
+  star.cc = null
+  star.contract = null
+  star.lastTransferSeason = null
+  star.freeAgentSince = currentSeason
+  return star
+}
+
+// Maintain the full football world, not only the qualified clubs. The target
+// is about 200 contracted players and 25 free agents at all times. Existing
+// compatible saves are gently normalized by releasing the weakest third stars
+// and retiring only surplus low-tier free agents.
+function maintainStarPopulation(moves, currentSeason, { opening = false, finalPass = false } = {}) {
+  S.freeAgents = S.freeAgents || { stars: [], coaches: [] }
+  S.freeAgents.stars = S.freeAgents.stars || []
+  const moveToFreeAgency = (team, star, reason) => {
+    team.stars = (team.stars || []).filter(s => s !== star)
+    star.teamId = null
+    star.teamName = null
+    star.cc = null
+    star.contract = null
+    star.freeAgentSince = currentSeason
+    if (!S.freeAgents.stars.includes(star)) S.freeAgents.stars.push(star)
+    moves.push({ phase:'pool_balance', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:team.name, fromId:team.id, fromCC:team.cc, to:'Free agency', reason })
+  }
+
+  // Never retain more than three named stars at a club.
+  for (const team of S.allTeams || []) {
+    team.stars = team.stars || []
+    while (team.stars.length > CLUB_STAR_MAX) {
+      const removable = [...team.stars].sort((a,b) =>
+        Number(!!a.historicLegend) - Number(!!b.historicLegend) ||
+        tierRankValue(a.tier) - tierRankValue(b.tier) ||
+        (a.fame || 0) - (b.fame || 0)
+      )[0]
+      moveToFreeAgency(team, removable, 'club roster reduced to three stars')
+    }
+  }
+
+  // Every club carries at least two stars. On a fresh 1956 world their career
+  // stages are staggered so retirements do not arrive in one giant wave.
+  for (const team of shuffle([...(S.allTeams || [])])) {
+    while (team.stars.length < CLUB_STAR_MIN) {
+      const star = genStar(team)
+      if (opening) prepareOpeningPlayer(star, team)
+      team.stars.push(star)
+      moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary, reason:'roster expansion' })
+    }
+  }
+
+  // Normalize oversized legacy rosters by releasing the least important third
+  // stars first. Historical legends and premium stars are protected.
+  while (contractedStarCount() > CLUB_STAR_TARGET) {
+    const candidates = (S.allTeams || []).flatMap(team => (team.stars || []).length > CLUB_STAR_MIN
+      ? team.stars.map(star => ({ team, star })) : [])
+      .sort((a,b) =>
+        Number(!!a.star.historicLegend) - Number(!!b.star.historicLegend) ||
+        tierRankValue(a.star.tier) - tierRankValue(b.star.tier) ||
+        (a.star.fame || 0) - (b.star.fame || 0) ||
+        playerAge(b.star, currentSeason) - playerAge(a.star, currentSeason)
+      )
+    if (!candidates.length) break
+    moveToFreeAgency(candidates[0].team, candidates[0].star, 'club roster normalized')
+  }
+
+  // Fill third-star slots until the contracted world reaches ~200. Rich and
+  // ambitious clubs are somewhat more likely to carry three, but randomness
+  // keeps the same giants from monopolizing every extra player.
+  let safety = 0
+  while (contractedStarCount() < CLUB_STAR_TARGET && safety++ < 500) {
+    const candidates = (S.allTeams || []).filter(team => (team.stars || []).length < CLUB_STAR_MAX)
+    if (!candidates.length) break
+    candidates.sort((a,b) => {
+      const scoreA = annualIncome(a, currentSeason)/70 + (a.financeProfile?.ambition || 1)*2 + Math.random()*10
+      const scoreB = annualIncome(b, currentSeason)/70 + (b.financeProfile?.ambition || 1)*2 + Math.random()*10
+      return scoreB - scoreA
+    })
+    const team = candidates[0]
+    const star = genStar(team)
+    if (opening) prepareOpeningPlayer(star, team)
+    team.stars.push(star)
+    moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary, reason:'expanded three-star roster' })
+  }
+
+  // Keep a genuine free-agent market. New unattached players use the same
+  // rarity-deficit generator as academy products, so the global distribution
+  // stays near 3/10/20/40 for the four premium tiers.
+  while (S.freeAgents.stars.length < FREE_AGENT_TARGET && worldStarCount() < WORLD_STAR_MAX) {
+    const star = createProceduralFreeAgent(currentSeason, opening)
+    if (!star) break
+    S.freeAgents.stars.push(star)
+    moves.push({ phase:'fa_arrival', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Released player pool', to:'Free agency', reason:'market depth' })
+  }
+
+  // Transfers and contract releases can push free agency above thirty. Remove
+  // older Common/Uncommon surplus first; premium players remain available.
+  const trimOneFreeAgent = () => {
+    const ordered = [...S.freeAgents.stars].sort((a,b) =>
+      Number(!!a.historicLegend) - Number(!!b.historicLegend) ||
+      tierRankValue(a.tier) - tierRankValue(b.tier) ||
+      playerAge(b, currentSeason) - playerAge(a, currentSeason) ||
+      (a.fame || 0) - (b.fame || 0)
+    )
+    const victim = ordered[0]
+    if (!victim) return false
+    S.freeAgents.stars = S.freeAgents.stars.filter(s => s !== victim)
+    moves.push({ phase:'retirement', kind:'player', star:victim, name:victim.name, tier:victim.tier, pos:victim.pos, from:'Free agency', reason:'left the professional player pool' })
+    return true
+  }
+  while (S.freeAgents.stars.length > FREE_AGENT_MAX) if (!trimOneFreeAgent()) break
+  while (worldStarCount() > WORLD_STAR_MAX && S.freeAgents.stars.length > FREE_AGENT_MIN) if (!trimOneFreeAgent()) break
+
+  // A final pass repairs rare edge cases after transfer activity: a club that
+  // lost two players still gets back to two, and the world never falls below
+  // 220 active professionals.
+  if (finalPass) {
+    for (const team of shuffle([...(S.allTeams || [])])) {
+      while (team.stars.length < CLUB_STAR_MIN && worldStarCount() < WORLD_STAR_MAX) {
+        const star = genStar(team)
+        team.stars.push(star)
+        moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary, reason:'late roster replacement' })
+      }
+    }
+    while (worldStarCount() < WORLD_STAR_MIN && S.freeAgents.stars.length < FREE_AGENT_MAX) {
+      const star = createProceduralFreeAgent(currentSeason, false)
+      if (!star) break
+      S.freeAgents.stars.push(star)
+      moves.push({ phase:'fa_arrival', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Released player pool', to:'Free agency', reason:'world roster replacement' })
+    }
+  }
 }
 
 
@@ -1954,7 +2140,11 @@ function injectHistoricLegends(moves, currentSeason) {
     // same rarity. They still obey the global caps: if the rarity is full,
     // the least-established generated player is retired. If every occupied
     // slot already belongs to a named legend, this debut waits.
-    const cap = def.tier === 'generational' ? GENERATIONAL_CAP_MAX : def.tier === 'legendary' ? LEGENDARY_CAP_MAX : null
+    const cap = def.tier === 'generational' ? GENERATIONAL_CAP_MAX
+      : def.tier === 'legendary' ? LEGENDARY_CAP_MAX
+      : def.tier === 'epic' ? STAR_TIER_HARD_MAX.epic
+      : def.tier === 'rare' ? STAR_TIER_HARD_MAX.rare
+      : null
     if (cap != null && countTierInWorld(def.tier) >= cap) {
       const generated = (S.allTeams || []).flatMap(team => (team.stars || []).map(star => ({ team, star })))
         .filter(x => x.star.tier === def.tier && !x.star.historicLegend)
@@ -2176,7 +2366,11 @@ export function runMarket() {
     }
   }
 
-  // Keep at least one Generational player in the active world.
+  // Expand the complete football world before clubs enter the market:
+  // roughly 200 contracted stars and 25 free agents, with 2-3 per club.
+  maintainStarPopulation(moves, currentSeason, { opening:isOpeningMarket })
+
+  // Keep at least two Generational players in the active world.
   if (countGenerationalsInWorld() < GENERATIONAL_CAP_MIN) {
     const team = [...S.allTeams].filter(t => (t.stars?.length || 0) < 3).sort((a,b) => annualIncome(b)-annualIncome(a))[0]
     if (team) {
@@ -2324,13 +2518,8 @@ export function runMarket() {
     moves.push({ phase:'fa_sign', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Free agency', to:team.name, toId:team.id, toCC:team.cc, signFee:bonus, salary, contractYears:years })
   }
 
-  // Refill clubs stripped of their only star with a youth prospect.
-  for (const team of S.allTeams) {
-    if ((team.stars || []).length) continue
-    const star = genStar(team)
-    team.stars.push(star)
-    moves.push({ phase:'youth', kind:'player', star, name:star.name, tier:star.tier, pos:star.pos, from:'Youth Academy', to:team.name, toId:team.id, toCC:team.cc, salary:star.contract?.salary })
-  }
+  // Restore the target world after transfers, releases, and signings.
+  maintainStarPopulation(moves, currentSeason, { finalPass:true })
 
   // 7) Pay named-player and coach salaries from treasury.
   for (const team of S.allTeams) {

@@ -33,8 +33,23 @@ const FLAG_PATTERNS = {
   ua:{type:'h',c:['#0057B7','#FFD700']}, tr:{type:'solid',c:['#E30A17'],mark:'crescent'},
   gr:{type:'stripes',c:['#0D5EAF','#fff']}, br:{type:'solid',c:['#009C3B'],mark:'diamond'},
   ar:{type:'h',c:['#74ACDF','#fff','#74ACDF'],mark:'sun'}, uy:{type:'stripes',c:['#fff','#5CB8E6']},
-  mx:{type:'v',c:['#006847','#fff','#CE1126']}, sn:{type:'v',c:['#00853F','#FDEF42','#E31B23']},
-  kr:{type:'solid',c:['#fff'],mark:'taegeuk'}, ng:{type:'v',c:['#008751','#fff','#008751']},
+  mx:{type:'v',c:['#006847','#fff','#CE1126']}, co:{type:'h',c:['#FCD116','#003893','#CE1126'],w:[2,1,1]},
+  cl:{type:'h',c:['#fff','#D52B1E'],mark:'triangle'}, pe:{type:'v',c:['#D91023','#fff','#D91023']},
+  ec:{type:'h',c:['#FFD100','#034EA2','#ED1C24'],w:[2,1,1]}, py:{type:'h',c:['#D52B1E','#fff','#0038A8']},
+  ve:{type:'h',c:['#F4C300','#003DA5','#CF142B']}, cr:{type:'h',c:['#002B7F','#fff','#CE1126','#fff','#002B7F'],w:[1,1,2,1,1]},
+  us:{type:'stripes',c:['#B22234','#fff']}, ca:{type:'v',c:['#D80621','#fff','#D80621']},
+  ie:{type:'v',c:['#169B62','#fff','#FF883E']}, au:{type:'solid',c:['#012169'],mark:'saltire'},
+  sn:{type:'v',c:['#00853F','#FDEF42','#E31B23']}, ng:{type:'v',c:['#008751','#fff','#008751']},
+  gh:{type:'h',c:['#CE1126','#FCD116','#006B3F']}, ci:{type:'v',c:['#F77F00','#fff','#009E60']},
+  cm:{type:'v',c:['#007A5E','#CE1126','#FCD116']}, ml:{type:'v',c:['#14B53A','#FCD116','#CE1126']},
+  za:{type:'h',c:['#007749','#FFB81C','#DE3831']}, ao:{type:'h',c:['#CC092F','#000']},
+  cv:{type:'h',c:['#003893','#fff','#CF2027','#fff','#003893'],w:[4,1,1,1,2]}, mz:{type:'h',c:['#009739','#000','#FCE300']},
+  ma:{type:'solid',c:['#C1272D'],mark:'crescent'}, dz:{type:'v',c:['#006233','#fff'],mark:'crescent'},
+  tn:{type:'solid',c:['#E70013'],mark:'crescent'}, eg:{type:'h',c:['#CE1126','#fff','#000']},
+  sa:{type:'solid',c:['#006C35']}, qa:{type:'v',c:['#fff','#8A1538'],w:[1,3]},
+  jp:{type:'solid',c:['#fff'],mark:'redsun'}, kr:{type:'solid',c:['#fff'],mark:'taegeuk'},
+  rs:{type:'h',c:['#C6363C','#0C4076','#fff']}, ba:{type:'solid',c:['#002395'],mark:'triangle'},
+  'gb-wls':{type:'h',c:['#fff','#00AB39']},
   be:{type:'v',c:['#000','#FFD90C','#EF3340']}, ch:{type:'solid',c:['#D52B1E'],mark:'cross'},
   at:{type:'h',c:['#ED2939','#fff','#ED2939']}, ro:{type:'v',c:['#002B7F','#FCD116','#CE1126']},
   cz:{type:'h',c:['#fff','#D7141A'],mark:'triangle'}, pl:{type:'h',c:['#fff','#DC143C']},
@@ -66,6 +81,7 @@ function flag(cc) {
   if(m==='crescent') parts.push('<circle cx="13" cy="10" r="6" fill="#fff"/><circle cx="15.5" cy="8.5" r="5" fill="#E30A17"/><circle cx="20" cy="10" r="1.6" fill="#fff"/>')
   if(m==='diamond') parts.push('<path d="M15 3 L27 10 L15 17 L3 10Z" fill="#FFDF00"/><circle cx="15" cy="10" r="4" fill="#002776"/>')
   if(m==='sun') parts.push('<circle cx="15" cy="10" r="2.1" fill="#F6B40E"/>')
+  if(m==='redsun') parts.push('<circle cx="15" cy="10" r="4.2" fill="#BC002D"/>')
   if(m==='taegeuk') parts.push('<path d="M10 10a5 5 0 0 1 10 0a2.5 2.5 0 0 0-5 0a2.5 2.5 0 0 1-5 0" fill="#CD2E3A"/><path d="M20 10a5 5 0 0 1-10 0a2.5 2.5 0 0 0 5 0a2.5 2.5 0 0 1 5 0" fill="#0047A0"/>')
   if(m==='triangle') parts.push('<path d="M0 0 L12 10 L0 20Z" fill="#11457E"/>')
   if(m==='checker') parts.push('<rect x="12" y="7" width="6" height="6" fill="#fff" stroke="#D00" stroke-width="1"/>')

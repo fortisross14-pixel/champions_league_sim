@@ -164,7 +164,7 @@ function resetState() {
 // Bump this whenever the save-state shape changes in a
 // breaking way. importSave() warns when it sees an older version
 // so users know why their save might not look right.
-const SAVE_VERSION = 5
+const SAVE_VERSION = 6
 
 export function buildSave() {
   // Deep clone of the live S — captures every field present at
@@ -260,12 +260,47 @@ function isLegacySave(data) {
 }
 
 
+// FC Barcelona is intentionally absent from this universe. Compatible saves
+// from earlier packages are converted to Deportivo La Coruña so no retired
+// club remains in league tables, historic winners, transfers, or star careers.
+function migrateRemovedClub(data) {
+  if (!data || typeof data !== 'object') return
+  const idFields = new Set(['id','teamId','previousTeamId','fromId','toId','championId','runnerUpId','winnerId','finalistId'])
+  const nameFields = new Set(['name','teamName','from','to','championName','runnerUpName','winnerName','finalistName'])
+  const walk = value => {
+    if (!value || typeof value !== 'object') return
+    if (Array.isArray(value)) {
+      value.forEach(walk)
+      return
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'bar')) {
+      if (!Object.prototype.hasOwnProperty.call(value, 'dep')) value.dep = value.bar
+      delete value.bar
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (idFields.has(key) && child === 'bar') value[key] = 'dep'
+      else if (nameFields.has(key) && child === 'FC Barcelona') value[key] = 'Deportivo La Coruña'
+      else walk(child)
+    }
+  }
+  walk(data)
+  if (Array.isArray(data.allTeams)) {
+    const seen = new Set()
+    data.allTeams = data.allTeams.filter(team => {
+      if (!team?.id || seen.has(team.id)) return false
+      seen.add(team.id)
+      return true
+    })
+  }
+}
+
 // Bring older compatible saves forward without discarding a long-running
 // universe. The previous economy stored tiny balances (where 20-30 was huge),
 // so balances are translated to the new millions scale once. New historical
 // collections start empty and fill from the next offseason onward.
 function migrateSaveData(data) {
   if (!data || typeof data !== 'object') return data
+  migrateRemovedClub(data)
   if (!Array.isArray(data.transferHistory)) data.transferHistory = []
   if (!Array.isArray(data.financeHistory)) data.financeHistory = []
   // Saves created before the historical-era update were already modern
@@ -298,7 +333,7 @@ function migrateSaveData(data) {
       team.cashOnHand = Math.round((team.treasury || 0) * 10) / 10
     })
   }
-  data.saveVersion = Math.max(Number(data.saveVersion) || 0, 5)
+  data.saveVersion = Math.max(Number(data.saveVersion) || 0, 6)
   return data
 }
 
@@ -312,7 +347,14 @@ function mergeStaticTeamData(data) {
   data.allTeams.forEach(t => {
     const src = byId.get(t.id)
     if (!src) return
-    if (!t.colors && src.colors) t.colors = src.colors
+    // Static identity and club tier always come from the current database.
+    // Dynamic fields (stars, treasury, seasonStats, GM, etc.) remain untouched.
+    t.name = src.name
+    t.league = src.league
+    t.cc = src.cc
+    t.money = src.money
+    t.hist = src.hist
+    t.colors = src.colors
   })
   // New static clubs introduced by an update join compatible saves as
   // empty squads; the next offseason supplies their manager and players.
