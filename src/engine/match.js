@@ -73,6 +73,23 @@ export function getEffStats(team, isKO = false, opts = {}) {
     s.setPieces = clamp(s.setPieces + add('setPieces'), 10, 130)
   }
 
+  // Premium stars should make an elite side consistently difficult to beat,
+  // not merely create occasional highlight moments. This small reliability
+  // bonus sits on top of their normal positional stat line and is strongest
+  // in mentality, where great players most clearly reduce upset volatility.
+  for (const star of stars) {
+    if (!star || !['legendary','generational'].includes(star.tier)) continue
+    const boost = star.tier === 'generational' ? 4 : 2
+    s.mental = clamp(s.mental + boost, 10, 130)
+    if (star.pos === 'FWD') s.attack = clamp(s.attack + boost, 10, 130)
+    else if (star.pos === 'MID') {
+      s.attack = clamp(s.attack + Math.ceil(boost * 0.75), 10, 130)
+      s.setPieces = clamp(s.setPieces + Math.ceil(boost * 0.5), 10, 130)
+    } else {
+      s.defense = clamp(s.defense + boost, 10, 130)
+    }
+  }
+
   if (team.coach?.statBonus) {
     const fx = team.coach.statBonus
     s.attack    = clamp(s.attack    + (fx.attack    || 0), 10, 130)
@@ -283,6 +300,13 @@ function statsToGoals(myStats, myEff, myStars, oppStars, possessionPct, myCoachT
   const preciseTier = findStarTraitTier(myStars, 'precise_shooting')
   if (preciseTier === 'legendary') { convMin = 0.20; convMax = 0.50 }
   else if (preciseTier === 'epic') { convMin = 0.10; convMax = 0.40 }
+  else {
+    const premiumAttack = myStars.find(s => ['FWD','MID'].includes(s.pos) && s.tier === 'generational')
+      ? 'generational'
+      : (myStars.find(s => ['FWD','MID'].includes(s.pos) && s.tier === 'legendary') ? 'legendary' : null)
+    if (premiumAttack === 'generational') { convMin = 0.08; convMax = Math.max(convMax, 0.34) }
+    else if (premiumAttack === 'legendary') { convMin = 0.04; convMax = Math.max(convMax, 0.30) }
+  }
   // setPieces contributes a small uplift to the high end.
   convMax += clamp((myEff.setPieces - 70) / 800, -0.02, 0.04)
 
@@ -761,10 +785,16 @@ export function simMatch(t1, t2, allowDraw = true, isKO = false) {
     if (g1 !== g2) {
       winner = g1 > g2 ? t1 : t2
     } else {
-      let m1Bias = e1.mental, m2Bias = e2.mental
-      if (teamHasStarTrait(stars1, 'penalty_specialist')) m1Bias += 8
-      if (teamHasStarTrait(stars2, 'penalty_specialist')) m2Bias += 8
-      winner = (m1Bias + rand(-10,10)) >= (m2Bias + rand(-10,10)) ? t1 : t2
+      const gkTier = stars => stars.some(s => s?.pos === 'GK' && s.tier === 'generational')
+        ? 'generational'
+        : (stars.some(s => s?.pos === 'GK' && s.tier === 'legendary') ? 'legendary' : null)
+      const gk1 = gkTier(stars1), gk2 = gkTier(stars2)
+      let chanceT1 = 0.50
+      if (gk1 === 'generational' && gk2 !== 'generational') chanceT1 = 0.80
+      else if (gk2 === 'generational' && gk1 !== 'generational') chanceT1 = 0.20
+      else if (gk1 === 'legendary' && !gk2) chanceT1 = 0.67
+      else if (gk2 === 'legendary' && !gk1) chanceT1 = 0.33
+      winner = Math.random() < chanceT1 ? t1 : t2
       penalties = true
       effects.push(`🥅 Penalties — ${winner.name} win!`)
     }

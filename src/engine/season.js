@@ -1757,16 +1757,24 @@ export function buildKnockout() {
   S.knockoutRounds = [{ name:'Round of 16', matches:r16 }]
 }
 
+function eliteGoalkeeperTier(team) {
+  const keepers = (team.stars || []).filter(s => s?.pos === 'GK')
+  if (keepers.some(s => s.tier === 'generational')) return 'generational'
+  if (keepers.some(s => s.tier === 'legendary')) return 'legendary'
+  return null
+}
+
+// Shootouts are intentionally independent of team rating. Ordinary teams are
+// a pure coin flip. Only an elite named goalkeeper changes the odds.
 function resolveAggregatePenaltyWinner(t1, t2) {
-  const e1 = getEffStats(t1, true)
-  const e2 = getEffStats(t2, true)
-  const stars1 = t1.stars || []
-  const stars2 = t2.stars || []
-  let p1 = e1.mental + rand(-10,10)
-  let p2 = e2.mental + rand(-10,10)
-  if (stars1.some(s => s.trait?.id === 'penalty_specialist')) p1 += 8
-  if (stars2.some(s => s.trait?.id === 'penalty_specialist')) p2 += 8
-  return p1 >= p2 ? t1 : t2
+  const gk1 = eliteGoalkeeperTier(t1)
+  const gk2 = eliteGoalkeeperTier(t2)
+  let chanceT1 = 0.50
+  if (gk1 === 'generational' && gk2 !== 'generational') chanceT1 = 0.80
+  else if (gk2 === 'generational' && gk1 !== 'generational') chanceT1 = 0.20
+  else if (gk1 === 'legendary' && !gk2) chanceT1 = 0.67
+  else if (gk2 === 'legendary' && !gk1) chanceT1 = 0.33
+  return Math.random() < chanceT1 ? t1 : t2
 }
 
 export function playKnockoutMatch(match) {
@@ -1776,6 +1784,20 @@ export function playKnockoutMatch(match) {
   // finish level. After the second leg, aggregate goal difference decides
   // the tie; an aggregate draw goes straight to penalties (no extra time).
   if (S.era === 'european_cup') {
+    const currentRound = (S.knockoutRounds || []).find(r => r.matches?.includes(match))
+    const isFinal = currentRound?.name === 'Final'
+
+    // The European Cup final is always a single neutral-site match.
+    if (isFinal) {
+      const finalResult = simMatch(match.t1, match.t2, false, true)
+      match.played = true
+      match.result = finalResult
+      applyMentalityDelta(finalResult)
+      trackMatchStats(finalResult, 'knockout')
+      autoSave()
+      return finalResult
+    }
+
     if (!match.firstLegResult) {
       const first = simMatch(match.t1, match.t2, true, true)
       first.tieLeg = 1

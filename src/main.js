@@ -1348,21 +1348,35 @@ function allTimeGoalTable() {
   ;(S.teams || []).flatMap(t => t.stars || []).forEach(star => totals.set(star.id, (totals.get(star.id)||0) + (star.goals||0)))
   return [...totals.entries()].sort((a,b) => b[1]-a[1])
 }
+function careerAverageRating(star) {
+  const seasonAverages = []
+  ;(S.history || []).forEach(h => {
+    const rec = (h.stars || []).find(x => x.id === star.id)
+    if (rec?.avgRating) seasonAverages.push(rec.avgRating)
+  })
+  if (star.ratings?.length) seasonAverages.push(star.ratings.reduce((a,b)=>a+b,0)/star.ratings.length)
+  return seasonAverages.length ? seasonAverages.reduce((a,b)=>a+b,0)/seasonAverages.length : 0
+}
 function playerWatchNarrative(star) {
   const careerYear = (S.season || 1) - (star.season || 1)
   const lastYear = careerYear >= (star.lifespan || 9) - 1
   const firstYear = careerYear <= 0
   const titles = star.medals?.gold || 0
   const goals = careerGoalsFor(star)
+  const avgRating = careerAverageRating(star)
   const leaders = allTimeGoalTable()
   const leader = leaders[0]
   const gap = leader && leader[0] !== star.id ? leader[1] - goals + 1 : null
   if (lastYear && titles === 0) return `Last chance to grab the European title that has escaped ${star.name}'s entire career.`
   if (lastYear && titles > 0) return `${star.name} wants one more European Cup before retirement closes the story.`
+  if (avgRating >= 8.6) return `${star.name} enters the season with one of the highest career ratings the competition has ever seen.`
+  if (star.pos === 'GK' && avgRating >= 8.0) return `A goalkeeper capable of deciding an entire tie — few players have been more consistently dominant.`
+  if (star.pos === 'DEF' && avgRating >= 8.0) return `One of the defining defenders of the era, valued as much for control and consistency as for trophies.`
+  if (firstYear) return `A first European campaign for one of football's most exciting new names.`
   if (gap != null && gap > 0 && gap <= 10) return `${star.name} needs ${gap} goal${gap===1?'':'s'} to become the leading scorer in tournament history.`
   if (leader?.[0] === star.id && goals > 0) return `${star.name} begins the campaign defending the all-time scoring lead with ${goals} goals.`
-  if (firstYear) return `A first European campaign for one of football's most exciting new names.`
   if (titles === 0) return `Elite ability, but still no European crown — this season could define the career.`
+  if (avgRating >= 7.8) return `${star.name} remains one of the tournament's most reliable elite performers, season after season.`
   return `${titles} title${titles===1?'':'s'} already won, and the appetite for another has not disappeared.`
 }
 
